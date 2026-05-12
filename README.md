@@ -382,7 +382,7 @@ scripts/                   Migration helpers
 
 ---
 
-## Build & Run Locally
+## Build & Run Locally (Windows)
 
 ### Prerequisites
 
@@ -390,7 +390,9 @@ scripts/                   Migration helpers
 |---|---|---|
 | Node.js | 24+ | `node --version` |
 | pnpm | 9+ | `npm i -g pnpm` |
-| PostgreSQL | 14+ | Local install or Neon/Supabase free tier |
+| PostgreSQL | 14+ | Local install. Service must be running. |
+
+> **⚠️ Windows Note:** This project was originally built for Linux/Replit. The following instructions include fixes for running on Windows.
 
 ---
 
@@ -399,49 +401,73 @@ scripts/                   Migration helpers
 ```bash
 git clone <repo-url>
 cd private-intent
+
+# Install dependencies
 pnpm install
 ```
+
+> **Windows fix:** The `preinstall` script has been rewritten from `sh -c` to `node -e` for Windows compatibility.
+> **Windows fix:** Platform-specific overrides in `pnpm-workspace.yaml` for `@esbuild/win32-x64`, `@rollup/rollup-win32-x64-msvc`, `lightningcss-win32-x64-msvc`, and `@tailwindcss/oxide-win32-x64-msvc` have been removed to allow native Windows binaries.
 
 ---
 
 ### Step 2 — Environment Variables
 
-Create `.env` in the project root. Only `DATABASE_URL` is required to boot:
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+# edit .env with your values
+```
+
+Required variables:
 
 ```bash
 # Required
 DATABASE_URL=postgresql://postgres:password@localhost:5432/private_intent
 
-# Required for AI features (set automatically on Replit via integration)
-ANTHROPIC_API_KEY=sk-ant-...
+# Required for AI features (leave empty to skip AI)
+AI_INTEGRATIONS_ANTHROPIC_BASE_URL=https://api.anthropic.com
+AI_INTEGRATIONS_ANTHROPIC_API_KEY=sk-ant-...
 
-# Optional — persist sentinel keypair across restarts (copy from console on first boot)
-SOLANA_SECRET_KEY_ARRAY=[1,2,3,...]
-SOLANA_DEVNET_PUBKEY=<base58>
-
-# Optional — Live Solver ETH wallet (for real ETH Sepolia delivery)
-ETH_SOLVER_PRIVATE_KEY=0x...
-
-# Optional — FHE master key (auto-derived from DATABASE_URL hash if not set)
-MASTER_ENCRYPT_KEY=<64-hex-chars>
-
-# Optional — override default ports
+# Port for API server
 PORT=8080
 ```
+
+Optional variables (see `.env.example` for details):
+- `SOLANA_SECRET_KEY_ARRAY` — persist sentinel keypair across restarts
+- `SOLANA_DEVNET_PUBKEY` — sentinel public key (base58)
+- `ETH_SOLVER_PRIVATE_KEY` — Live Solver ETH wallet (for real testnet delivery)
+- `MASTER_ENCRYPT_KEY` — FHE master key (64 hex chars)
 
 **What needs no keys at all:**
 - Ika devnet — public gRPC endpoint, no registration
 - Encrypt devnet — public gRPC endpoint, no registration
-- Solana devnet — public RPC, no registration
+- Solana devnet — public RPC, no registration (`https://api.devnet.solana.com`)
 - ETH Sepolia — public RPC, no registration
 
 ---
 
 ### Step 3 — Database Setup
 
+Make sure PostgreSQL is running:
+
+```bash
+# Windows: check if service is running
+Get-Service -Name postgresql* | Format-Table Status, Name
+
+# Start PostgreSQL if stopped (may need admin rights)
+& "C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" start -D "C:\Program Files\PostgreSQL\17\data"
+```
+
+Create the database and run migrations:
+
 ```bash
 # Create the database
-createdb private_intent
+createdb -U postgres private_intent
+
+# Or restore from backup if available:
+psql -U postgres -d private_intent -f /path/to/backup.sql
 
 # Run Drizzle migrations
 pnpm --filter @workspace/db run generate
@@ -452,66 +478,91 @@ pnpm --filter @workspace/db run migrate
 
 ### Step 4 — Build & Start the API Server
 
-```bash
-# Build (esbuild) + start in one command
-pnpm --filter @workspace/api-server run dev
+```powershell
+# Set environment variables and run
+$env:DATABASE_URL="postgresql://postgres@localhost:5432/private_intent"
+$env:PORT="8080"
+$env:AI_INTEGRATIONS_ANTHROPIC_BASE_URL="https://api.anthropic.com"
+$env:AI_INTEGRATIONS_ANTHROPIC_API_KEY="sk-placeholder"  # replace with real key
+
+# Build (esbuild)
+pnpm --filter @workspace/api-server run build
+
+# Start server
+pnpm --filter @workspace/api-server run start
 ```
 
 Expected output:
 ```
-⚡ Done in ~800ms
+[Solana] Sentinel keypair loaded from env — pubkey=99pdEHxysxtd6KhFQ6im6NRAX5hHUm3rpMNJSCjUjfBQ
+[LiveSolver] ETH wallet generated: 0x...
+[LiveSolver] Auto-registered.
+[LiveRates] CoinGecko SOL=$96.xx ETH=$229x.xx PYUSD=$1.00
+[Ika] gRPC connectivity OK — pre-alpha-dev-1.ika.ika-network.net:443 (3051ms)
 [INFO] Server listening port=8080
-[INFO] Agent loop started intervalMs=30000
-[Solana] Generated FRESH sentinel keypair — pubkey=<base58>
-[LiveSolver] ETH wallet: 0x...
-[LiveRates] CoinGecko SOL=$93.xx ETH=$2xxx.xx PYUSD=$1.00
-[Ika] gRPC connectivity OK — pre-alpha-dev-1.ika.ika-network.net:443
-```
-
-**Fund the sentinel keypair** — copy the `pubkey=...` from the log and request 1 SOL devnet at [faucet.solana.com](https://faucet.solana.com). Required for escrow PDAs and on-chain memo commits.
-
-To persist the keypair across restarts (avoid re-funding every time):
-```bash
-# After first boot
-cat /tmp/prism-sentinel-keypair.json
-# Copy the JSON array → set as SOLANA_SECRET_KEY_ARRAY env var
 ```
 
 ---
 
-### Step 5 — Start the Web Dashboard
+### Step 5 — Start the Web Dashboard (New Terminal)
 
-```bash
+Open a **new PowerShell terminal**:
+
+```powershell
+$env:Path = "C:\Program Files\nodejs;$env:APPDATA\npm;$env:Path"
+cd C:\Users\...\PrivateIntent
+$env:PORT="8081"
 pnpm --filter @workspace/prism-dwallet-web run dev
-# → http://localhost:8081
 ```
+
+Expected output:
+```
+VITE v7.3.2 ready in 1952ms
+Local: http://localhost:8081/
+```
+
+Open http://localhost:8081 in your browser.
 
 ---
 
 ### Step 6 — Run All Services Together
 
-```bash
-# Terminal 1 — API server
-pnpm --filter @workspace/api-server run dev
-
-# Terminal 2 — Web dashboard
-pnpm --filter @workspace/prism-dwallet-web run dev
-```
+| Terminal | Command | Port |
+|---|---|---|
+| **Terminal 1** — API server | See Step 4 | `8080` |
+| **Terminal 2** — Web dashboard | `$env:PORT="8081"; pnpm --filter @workspace/prism-dwallet-web run dev` | `8081` |
+| **Background** — PostgreSQL | Must be running | `5432` |
 
 ---
 
 ### Step 7 — Verify Everything Works
 
+**Check API health:**
+```bash
+curl http://localhost:8080/api/healthz
+# → {"status":"ok"}
+```
+
 **Check integration health:**
 ```bash
-curl http://localhost:8080/api/healthz/integrations | jq .ika.status
-# → "live"
+curl http://localhost:8080/api/healthz/integrations
+# → includes ika, encrypt, solana, ethereum, coingecko statuses
 ```
 
 **Get live rates:**
 ```bash
-curl http://localhost:8080/api/rates | jq .prices
-# → { "SOL": 93.42, "ETH": 2332.44, "PYUSD": 1.00 }
+curl http://localhost:8080/api/rates
+# → {"prices":{"SOL":96.16,"ETH":2299.29,"PYUSD":1.00}, ...}
+```
+
+**List all solvers:**
+```bash
+curl http://localhost:8080/api/intent/solvers | jq '.solvers[].name'
+```
+
+**Get intent history (from database):**
+```bash
+curl http://localhost:8080/api/intent/history
 ```
 
 **Submit a private intent:**
@@ -522,62 +573,10 @@ curl -X POST http://localhost:8080/api/intent/submit \
     "phantomPubkey": "<your-solana-pubkey>",
     "fromToken": "SOL",
     "toToken": "PYUSD",
-    "fromChain": "solana",
-    "toChain": "sepolia",
+    "fromChain": "SOL",
+    "toChain": "ETH",
     "amount": "0.5"
-  }' | jq '{intentId, status, crossChainOrder: .crossChainOrder.encryptedOrderData[:20], solverBids: (.solverBids | length)}'
-# → { "intentId": 42, "status": "pending", "crossChainOrder": "encrypted:...", "solverBids": 5 }
-```
-
-**Generate a SOL stealth address:**
-```bash
-curl -X POST http://localhost:8080/api/stealth/receive/generate \
-  -H "Content-Type: application/json" \
-  -d '{"phantomPubkey":"<your-pubkey>","chain":"SOL"}' | jq '{stealthAddress, chain, network}'
-# → { "stealthAddress": "4tkAd...", "chain": "SOL", "network": "solana-devnet" }
-```
-
-**Generate an ETH stealth address:**
-```bash
-curl -X POST http://localhost:8080/api/stealth/receive/generate \
-  -H "Content-Type: application/json" \
-  -d '{"phantomPubkey":"<your-pubkey>","chain":"ETH"}' | jq '{stealthAddress, chain, network}'
-# → { "stealthAddress": "0xA8E7...", "chain": "ETH", "network": "ethereum-sepolia" }
-```
-
-**Check stealth balance (auto-detects chain):**
-```bash
-curl http://localhost:8080/api/stealth/receive/balance/0xA8E769dEb... | jq .
-# → { "balance": 0, "chain": "ETH", "network": "ethereum-sepolia", "hasIncoming": false }
-```
-
-**Forward stealth funds through dark pool (Private Drop):**
-```bash
-curl -X POST http://localhost:8080/api/stealth/receive/forward \
-  -H "Content-Type: application/json" \
-  -d '{
-    "stealthAddress": "0xA8E769dEb...",
-    "ownerPhantomPubkey": "<your-pubkey>",
-    "monitorKey": "<monitorKey-from-generate>",
-    "amount": 0.001
-  }' | jq '{status, darkPoolOrderId, releaseAt}'
-# → { "status": "queued_in_dark_pool", "darkPoolOrderId": "a1b2c3...", "releaseAt": 1746... }
-```
-
-**Poll Private Drop delivery status (monitorKey required):**
-```bash
-curl "http://localhost:8080/api/stealth/receive/status/0xA8E769dEb...?monitorKey=<key>" | jq .
-# queued    → { "status": "queued_in_dark_pool", "remainingMs": 142000, "remainingMin": 2.4 }
-# delivered → { "status": "delivered", "intentId": 55, "outputAmount": "0.000980" }
-# no key    → HTTP 403 { "error": "monitorKey required." }
-```
-
-**Create a multi-chain dWallet via Ika DKG:**
-```bash
-curl -X POST http://localhost:8080/native/wallet/create \
-  -H "Content-Type: application/json" \
-  -d '{"chain":"ethereum"}' | jq '{id, ethAddress, curve, mode}'
-# → { "id": 1, "ethAddress": "0x...", "curve": "secp256k1", "mode": "devnet" }
+  }'
 ```
 
 ---

@@ -51,4 +51,7 @@ Thumbs.db
 # Local and secret files
 .agent/
 attached_assets/
-env
+
+# Environment variables (sensitive keys)
+.env
+.env.local
