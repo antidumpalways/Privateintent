@@ -1,0 +1,925 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: SentinelWallet API — DeFi guardian with Ika + Encrypt + Covalent
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: dwallet
+    description: Ika dWallet management
+  - name: policy
+    description: Policy configuration
+  - name: risk
+    description: Risk analysis engine
+  - name: transaction
+    description: Transaction submission and enforcement
+  - name: portfolio
+    description: Portfolio tracking via Covalent
+  - name: agent
+    description: Autonomous agent (Mode B)
+  - name: audit
+    description: Encrypted audit logs
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  # ─── DWALLET ────────────────────────────────────────────────────────────────
+  /dwallet/create:
+    post:
+      operationId: createDWallet
+      tags: [dwallet]
+      summary: Create an Ika dWallet for a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDWalletBody"
+      responses:
+        "201":
+          description: dWallet created — viewingKey returned ONCE, client must persist it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DWalletCreated"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: dWallet already exists for this address — use GET /dwallet/:walletAddress for current state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  dwalletId:
+                    type: string
+                  walletAddress:
+                    type: string
+                required:
+                  - error
+
+  /dwallet/{walletAddress}:
+    get:
+      operationId: getDWallet
+      tags: [dwallet]
+      summary: Get dWallet info for a wallet address
+      parameters:
+        - name: walletAddress
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: dWallet info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DWallet"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ─── POLICY ─────────────────────────────────────────────────────────────────
+  /policy:
+    post:
+      operationId: setPolicy
+      tags: [policy]
+      summary: Set encrypted policy for a dWallet (Encrypt FHE)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetPolicyBody"
+      responses:
+        "200":
+          description: Policy set and encrypted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /policy/{walletAddress}:
+    get:
+      operationId: getPolicy
+      tags: [policy]
+      summary: Get policy for a wallet address
+      parameters:
+        - name: walletAddress
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Policy info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ─── RISK ANALYSIS ───────────────────────────────────────────────────────────
+  /risk/analyze:
+    post:
+      operationId: analyzeRisk
+      tags: [risk]
+      summary: Analyze transaction risk using Covalent + Claude AI
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnalyzeRiskBody"
+      responses:
+        "200":
+          description: Risk analysis result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RiskAnalysis"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /risk/scan/{contractAddress}:
+    get:
+      operationId: scanContract
+      tags: [risk]
+      summary: Quick risk scan of a token contract address
+      parameters:
+        - name: contractAddress
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Contract risk scan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContractScan"
+
+  # ─── TRANSACTION ─────────────────────────────────────────────────────────────
+  /transaction/submit:
+    post:
+      operationId: submitTransaction
+      tags: [transaction]
+      summary: Submit a transaction through Ika co-signing enforcement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitTransactionBody"
+      responses:
+        "200":
+          description: Transaction result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionResult"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ─── PORTFOLIO ───────────────────────────────────────────────────────────────
+  /portfolio/{walletAddress}:
+    get:
+      operationId: getPortfolio
+      tags: [portfolio]
+      summary: Get portfolio data from Covalent GoldRush
+      parameters:
+        - name: walletAddress
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Portfolio data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Portfolio"
+
+  # ─── AGENT ───────────────────────────────────────────────────────────────────
+  /agent/start:
+    post:
+      operationId: startAgent
+      tags: [agent]
+      summary: Activate the autonomous rebalancing agent (Mode B)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartAgentBody"
+      responses:
+        "200":
+          description: Agent started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentStatus"
+
+  /agent/pause:
+    post:
+      operationId: pauseAgent
+      tags: [agent]
+      summary: Pause the autonomous agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PauseAgentBody"
+      responses:
+        "200":
+          description: Agent paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentStatus"
+
+  /agent/status/{walletAddress}:
+    get:
+      operationId: getAgentStatus
+      tags: [agent]
+      summary: Get current agent status and last action
+      parameters:
+        - name: walletAddress
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Agent status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentStatus"
+
+  # ─── AUDIT ───────────────────────────────────────────────────────────────────
+  /audit/{walletAddress}:
+    get:
+      operationId: getAuditLogs
+      tags: [audit]
+      summary: Get encrypted audit logs for a wallet
+      parameters:
+        - name: walletAddress
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Audit logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditLog"
+
+  /audit/decrypt:
+    post:
+      operationId: decryptAuditLog
+      tags: [audit]
+      summary: Decrypt an audit log entry using user viewing key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecryptAuditBody"
+      responses:
+        "200":
+          description: Decrypted audit log
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecryptedAuditLog"
+
+  # ─── DASHBOARD ───────────────────────────────────────────────────────────────
+  /dashboard/{walletAddress}:
+    get:
+      operationId: getDashboardStats
+      tags: [dwallet]
+      summary: Get dashboard summary stats for a wallet
+      parameters:
+        - name: walletAddress
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Dashboard stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardStats"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    # ─── DWALLET SCHEMAS ──────────────────────────────────────────────────────
+    CreateDWalletBody:
+      type: object
+      properties:
+        walletAddress:
+          type: string
+          description: User's Solana/Sui wallet public key
+        mode:
+          type: string
+          enum: [protect, automate]
+          description: Operating mode (A or B)
+      required:
+        - walletAddress
+        - mode
+
+    DWallet:
+      type: object
+      properties:
+        id:
+          type: integer
+        walletAddress:
+          type: string
+        dwalletId:
+          type: string
+          description: Ika dWallet on-chain ID
+        mode:
+          type: string
+          enum: [protect, automate]
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - walletAddress
+        - dwalletId
+        - mode
+        - isActive
+        - createdAt
+
+    DWalletCreated:
+      allOf:
+        - $ref: "#/components/schemas/DWallet"
+        - type: object
+          description: Returned ONCE on wallet creation. Client must persist viewingKey — the server stores only a hash and cannot recover it.
+          properties:
+            viewingKey:
+              type: string
+              description: Encrypt FHE viewing key — returned only at creation time, store securely
+          required:
+            - viewingKey
+
+    # ─── POLICY SCHEMAS ──────────────────────────────────────────────────────
+    SetPolicyBody:
+      type: object
+      properties:
+        walletAddress:
+          type: string
+        maxSpendPerTxUsd:
+          type: number
+          description: Max USD spend per single transaction
+        maxDailySpendUsd:
+          type: number
+          description: Max USD spend per day
+        blockNewContracts:
+          type: boolean
+          description: Block contracts deployed < 30 days ago
+        maxSellTaxPercent:
+          type: number
+          description: Block tokens with sell tax above this %
+        whitelistedProtocols:
+          type: array
+          items:
+            type: string
+          description: Protocol addresses always allowed
+        targetAllocations:
+          type: ["object", "null"]
+          description: Target portfolio allocations for Mode B (token -> percent)
+          additionalProperties:
+            type: number
+      required:
+        - walletAddress
+        - maxSpendPerTxUsd
+        - maxDailySpendUsd
+        - blockNewContracts
+        - maxSellTaxPercent
+
+    Policy:
+      type: object
+      properties:
+        id:
+          type: integer
+        walletAddress:
+          type: string
+        maxSpendPerTxUsd:
+          type: number
+        maxDailySpendUsd:
+          type: number
+        blockNewContracts:
+          type: boolean
+        maxSellTaxPercent:
+          type: number
+        whitelistedProtocols:
+          type: array
+          items:
+            type: string
+        targetAllocations:
+          type: ["object", "null"]
+          additionalProperties:
+            type: number
+        encryptedRef:
+          type: string
+          description: On-chain reference to Encrypt FHE encrypted policy
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - walletAddress
+        - maxSpendPerTxUsd
+        - maxDailySpendUsd
+        - blockNewContracts
+        - maxSellTaxPercent
+        - whitelistedProtocols
+        - encryptedRef
+        - updatedAt
+
+    # ─── RISK SCHEMAS ────────────────────────────────────────────────────────
+    AnalyzeRiskBody:
+      type: object
+      properties:
+        walletAddress:
+          type: string
+        contractAddress:
+          type: string
+        txAmountUsd:
+          type: number
+        txType:
+          type: string
+          description: "e.g. swap, transfer, approve"
+      required:
+        - walletAddress
+        - contractAddress
+        - txAmountUsd
+        - txType
+
+    RiskAnalysis:
+      type: object
+      properties:
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Composite risk score (0=safe, 100=dangerous)
+        verdict:
+          type: string
+          enum: [safe, warning, blocked]
+        reason:
+          type: string
+          description: Plain-language explanation
+        contractAge:
+          type: ["integer", "null"]
+          description: Contract age in days from Covalent
+        holderCount:
+          type: ["integer", "null"]
+        honeypotDetected:
+          type: boolean
+        rugPatternDetected:
+          type: boolean
+        sellTaxPercent:
+          type: ["number", "null"]
+        breakdownScores:
+          $ref: "#/components/schemas/RiskBreakdown"
+      required:
+        - score
+        - verdict
+        - reason
+        - honeypotDetected
+        - rugPatternDetected
+        - breakdownScores
+
+    RiskBreakdown:
+      type: object
+      properties:
+        contractAge:
+          type: number
+        txHistory:
+          type: number
+        holderDistribution:
+          type: number
+        approvalRisk:
+          type: number
+        aiPattern:
+          type: number
+      required:
+        - contractAge
+        - txHistory
+        - holderDistribution
+        - approvalRisk
+        - aiPattern
+
+    ContractScan:
+      type: object
+      properties:
+        contractAddress:
+          type: string
+        score:
+          type: integer
+        verdict:
+          type: string
+          enum: [safe, warning, blocked]
+        summary:
+          type: string
+        flags:
+          type: array
+          items:
+            type: string
+      required:
+        - contractAddress
+        - score
+        - verdict
+        - summary
+        - flags
+
+    # ─── TRANSACTION SCHEMAS ──────────────────────────────────────────────────
+    SubmitTransactionBody:
+      type: object
+      properties:
+        walletAddress:
+          type: string
+        contractAddress:
+          type: string
+        txAmountUsd:
+          type: number
+        txType:
+          type: string
+        txData:
+          type: string
+          description: Serialized transaction data (base64)
+        riskScore:
+          type: ["integer", "null"]
+          description: Pre-computed risk score (optional)
+      required:
+        - walletAddress
+        - contractAddress
+        - txAmountUsd
+        - txType
+        - txData
+
+    TransactionResult:
+      type: object
+      properties:
+        approved:
+          type: boolean
+        txHash:
+          type: ["string", "null"]
+          description: Transaction hash if approved and submitted
+        blocked:
+          type: boolean
+        blockReason:
+          type: ["string", "null"]
+          description: Plain-language reason if blocked
+        riskScore:
+          type: integer
+        ikaCoSigned:
+          type: boolean
+          description: Whether Ika provided co-signature
+        encryptedLogRef:
+          type: string
+          description: Reference to Encrypt-encrypted audit log entry
+      required:
+        - approved
+        - blocked
+        - riskScore
+        - ikaCoSigned
+        - encryptedLogRef
+
+    # ─── PORTFOLIO SCHEMAS ────────────────────────────────────────────────────
+    Portfolio:
+      type: object
+      properties:
+        walletAddress:
+          type: string
+        totalValueUsd:
+          type: number
+        changePercent24h:
+          type: number
+        tokens:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenBalance"
+        dangerousApprovals:
+          type: array
+          items:
+            $ref: "#/components/schemas/DangerousApproval"
+        lastUpdated:
+          type: string
+          format: date-time
+      required:
+        - walletAddress
+        - totalValueUsd
+        - changePercent24h
+        - tokens
+        - dangerousApprovals
+        - lastUpdated
+
+    TokenBalance:
+      type: object
+      properties:
+        symbol:
+          type: string
+        name:
+          type: string
+        contractAddress:
+          type: string
+        balance:
+          type: string
+        balanceUsd:
+          type: number
+        priceUsd:
+          type: number
+        changePercent24h:
+          type: number
+        allocationPercent:
+          type: number
+        logoUrl:
+          type: ["string", "null"]
+      required:
+        - symbol
+        - name
+        - contractAddress
+        - balance
+        - balanceUsd
+        - priceUsd
+        - changePercent24h
+        - allocationPercent
+
+    DangerousApproval:
+      type: object
+      properties:
+        spender:
+          type: string
+        token:
+          type: string
+        risk:
+          type: string
+          enum: [low, medium, high]
+      required:
+        - spender
+        - token
+        - risk
+
+    # ─── AGENT SCHEMAS ────────────────────────────────────────────────────────
+    StartAgentBody:
+      type: object
+      properties:
+        walletAddress:
+          type: string
+      required:
+        - walletAddress
+
+    PauseAgentBody:
+      type: object
+      properties:
+        walletAddress:
+          type: string
+      required:
+        - walletAddress
+
+    AgentStatus:
+      type: object
+      properties:
+        walletAddress:
+          type: string
+        isRunning:
+          type: boolean
+        lastAction:
+          type: ["string", "null"]
+          description: Plain-language description of last agent action
+        lastActionAt:
+          type: ["string", "null"]
+          format: date-time
+        dailySpendUsd:
+          type: number
+          description: Amount spent by agent today
+        dailyLimitUsd:
+          type: number
+        rebalanceCount:
+          type: integer
+          description: Total rebalances performed
+      required:
+        - walletAddress
+        - isRunning
+        - dailySpendUsd
+        - dailyLimitUsd
+        - rebalanceCount
+
+    # ─── AUDIT SCHEMAS ────────────────────────────────────────────────────────
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        walletAddress:
+          type: string
+        action:
+          type: string
+          enum: [passed, blocked, agent_action]
+        encryptedData:
+          type: string
+          description: Encrypt FHE encrypted audit payload
+        riskScore:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        plainSummary:
+          type: string
+          description: Non-sensitive summary visible without decryption
+      required:
+        - id
+        - walletAddress
+        - action
+        - encryptedData
+        - riskScore
+        - createdAt
+        - plainSummary
+
+    DecryptAuditBody:
+      type: object
+      properties:
+        logId:
+          type: integer
+        viewingKey:
+          type: string
+      required:
+        - logId
+        - viewingKey
+
+    DecryptedAuditLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        txHash:
+          type: ["string", "null"]
+        txType:
+          type: string
+        contractAddress:
+          type: string
+        amountUsd:
+          type: number
+        riskScore:
+          type: integer
+        action:
+          type: string
+        reason:
+          type: ["string", "null"]
+        ikaCoSigned:
+          type: boolean
+        timestamp:
+          type: string
+          format: date-time
+      required:
+        - id
+        - txType
+        - contractAddress
+        - amountUsd
+        - riskScore
+        - action
+        - ikaCoSigned
+        - timestamp
+
+    # ─── DASHBOARD SCHEMAS ────────────────────────────────────────────────────
+    DashboardStats:
+      type: object
+      properties:
+        walletAddress:
+          type: string
+        mode:
+          type: string
+          enum: [protect, automate]
+        isGuardianActive:
+          type: boolean
+        txScannedToday:
+          type: integer
+        threatsBlockedToday:
+          type: integer
+        totalLossesPrevented:
+          type: number
+        totalValueProtectedUsd:
+          type: number
+        agentStatus:
+          type: ["string", "null"]
+          description: Running/paused/not configured
+        portfolioValueUsd:
+          type: ["number", "null"]
+        recentActivity:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActivityItem"
+      required:
+        - walletAddress
+        - mode
+        - isGuardianActive
+        - txScannedToday
+        - threatsBlockedToday
+        - totalLossesPrevented
+        - totalValueProtectedUsd
+        - recentActivity
+
+    ActivityItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+          enum: [safe, blocked, agent_action]
+        description:
+          type: string
+        amountUsd:
+          type: ["number", "null"]
+        riskScore:
+          type: ["integer", "null"]
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - type
+        - description
+        - createdAt

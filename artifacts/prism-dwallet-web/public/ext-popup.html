@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CipherGate</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z" fill="#9945ff40" stroke="#9945ff" stroke-width="1.5"/>
+            <path d="M9 12l2 2 4-4" stroke="#9945ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="logo-text-group">
+          <span class="logo-text">CipherGate</span>
+          <span class="logo-sub">◎ Solana Guardian</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <span class="mode-badge">Mode A</span>
+        <div id="status-dot" class="status-dot status-active" title="Guardian Active"></div>
+      </div>
+    </header>
+
+    <!-- Guardian status bar -->
+    <div class="guardian-bar">
+      <div class="guardian-info">
+        <div class="guardian-indicator">
+          <div class="guardian-pulse"></div>
+          <span id="guardian-status-text" class="guardian-status-text">Guardian Active</span>
+        </div>
+        <span id="wallet-address" class="wallet-address">Loading...</span>
+      </div>
+      <div id="guardian-badge" class="guardian-badge">ACTIVE</div>
+    </div>
+
+    <!-- Ika dWallet — user's actual MPC signing wallet -->
+    <div id="dwallet-section" class="dwallet-section">
+      <div id="dw-none" class="dw-state dw-none">
+        <div class="dw-none-left">
+          <span class="dw-icon">🔐</span>
+          <div>
+            <div class="dw-none-title">No Ika dWallet</div>
+            <div class="dw-none-sub">Create MPC wallet for on-chain enforcement</div>
+          </div>
+        </div>
+        <button id="create-dwallet-btn" class="btn-ika">Create</button>
+      </div>
+      <div id="dw-creating" class="dw-state dw-creating hidden">
+        <div class="dw-spinner"></div>
+        <span class="dw-creating-text">Running MPC DKG on Ika devnet…</span>
+      </div>
+      <div id="dw-active" class="dw-state dw-active-card hidden">
+        <div class="dw-active-top">
+          <span class="dw-icon">🔐</span>
+          <div class="dw-active-info">
+            <div class="dw-active-title">Ika dWallet <span class="dw-mpc-badge">MPC</span></div>
+            <div id="dw-pubkey" class="dw-pubkey">—</div>
+          </div>
+          <div class="dw-status-badge">ACTIVE</div>
+        </div>
+        <div class="dw-active-desc">Key split across Ika nodes · CipherGate controls signing authority · true on-chain enforcement</div>
+      </div>
+    </div>
+
+    <!-- Last AI analysis result — shown first when available -->
+    <div id="last-analysis" class="last-analysis hidden">
+      <div class="last-analysis-header">
+        <span class="last-analysis-label">🤖 Last Analysis</span>
+        <span id="last-analysis-time" class="last-analysis-time"></span>
+      </div>
+      <div class="last-analysis-body">
+        <div class="last-analysis-score-row">
+          <div>
+            <div id="last-score" class="last-score">0</div>
+            <div id="last-verdict" class="last-verdict">SAFE</div>
+          </div>
+          <div class="last-analysis-addr-col">
+            <div id="last-addr" class="last-addr"></div>
+            <div id="last-ika" class="last-ika"></div>
+          </div>
+        </div>
+        <div id="last-forensic" class="last-forensic hidden"></div>
+        <div id="last-flags" class="last-flags"></div>
+      </div>
+    </div>
+
+    <!-- Risk tier legend -->
+    <div class="tier-legend">
+      <div class="tier-item">
+        <span class="tier-dot safe"></span>
+        <span>Safe &lt;40</span>
+      </div>
+      <div class="tier-divider"></div>
+      <div class="tier-item">
+        <span class="tier-dot warning"></span>
+        <span>Warning 40–69</span>
+      </div>
+      <div class="tier-divider"></div>
+      <div class="tier-item">
+        <span class="tier-dot danger"></span>
+        <span>Blocked ≥70</span>
+      </div>
+    </div>
+
+    <!-- Stats grid -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div id="stat-value" class="stat-value">$0</div>
+        <div class="stat-label">Value Protected</div>
+      </div>
+      <div class="stat-card">
+        <div id="stat-threats" class="stat-value stat-danger">0</div>
+        <div class="stat-label">Threats Blocked</div>
+      </div>
+      <div class="stat-card">
+        <div id="stat-scanned" class="stat-value">0</div>
+        <div class="stat-label">Scanned Today</div>
+      </div>
+    </div>
+
+    <!-- Quick scan -->
+    <div class="scan-section">
+      <div class="section-title">Quick Scan</div>
+      <div class="scan-row">
+        <div class="scan-input-wrap">
+          <input id="scan-input" class="scan-input" type="text" placeholder="Solana mint or 0x contract…" />
+          <span id="scan-chain-label" class="scan-chain-label hidden"></span>
+        </div>
+        <button id="scan-btn" class="btn btn-solana">Scan</button>
+      </div>
+      <div id="scan-result" class="scan-result hidden"></div>
+    </div>
+
+    <!-- Recent activity -->
+    <div class="activity-section">
+      <div class="section-title">Recent Activity</div>
+      <div id="activity-list" class="activity-list">
+        <div class="loading-row">Loading…</div>
+      </div>
+    </div>
+
+    <!-- System status -->
+    <div class="system-row">
+      <div class="system-item">
+        <span class="dot green"></span>
+        <span>Ika Network</span>
+      </div>
+      <div class="system-item">
+        <span class="dot green"></span>
+        <span>Encrypt FHE</span>
+      </div>
+      <div class="system-item">
+        <span class="dot green"></span>
+        <span>Covalent</span>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <button id="open-dashboard" class="btn btn-ghost">Open Dashboard</button>
+      <button id="open-options" class="btn btn-ghost">Settings</button>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

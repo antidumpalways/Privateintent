@@ -1,0 +1,58 @@
+[
+  {
+    "id": "a1b2c3d4-0001-4000-8000-aabbccddeeff",
+    "position": 1,
+    "filepath": "src/pages/slides/Slide1Title.tsx",
+    "title": "Private Intent",
+    "description": "Title slide — Swap any asset. No bridges. No leaks. Colosseum Frontier Hackathon 2026.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "a1b2c3d4-0002-4000-8000-aabbccddeeff",
+    "position": 2,
+    "filepath": "src/pages/slides/Slide2Problem.tsx",
+    "title": "The Problem",
+    "description": "Three broken fundamentals: bridge exploits ($2.8B), MEV extraction ($1.3B+), wallet fragmentation (5+ wallets per user).",
+    "speakerNotes": ""
+  },
+  {
+    "id": "a1b2c3d4-0003-4000-8000-aabbccddeeff",
+    "position": 3,
+    "filepath": "src/pages/slides/Slide3Solution.tsx",
+    "title": "The Solution",
+    "description": "One intent. Zero bridges. No leaks. Three pillars: Ika dWallet bridgeless custody, Encrypt FHE MEV shield, Solver Race + Anchor Escrow.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "a1b2c3d4-0004-4000-8000-aabbccddeeff",
+    "position": 4,
+    "filepath": "src/pages/slides/Slide4TechStack.tsx",
+    "title": "AI Layer",
+    "description": "Four AI pillars powered by Claude: Intent Parsing (chain abstraction), Route Optimization, AI Solver Agent (autonomous bidding), Dispute Resolution.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "a1b2c3d4-0005-4000-8000-aabbccddeeff",
+    "position": 5,
+    "filepath": "src/pages/slides/Slide5Architecture.tsx",
+    "title": "Architecture",
+    "description": "Full transaction flow: Phantom → Ika DKG → Encrypt FHE → Solver Race → Anchor Escrow → Ika MPC native delivery → Settled (~8s).",
+    "speakerNotes": ""
+  },
+  {
+    "id": "a1b2c3d4-0006-4000-8000-aabbccddeeff",
+    "position": 6,
+    "filepath": "src/pages/slides/Slide6DemoFlow.tsx",
+    "title": "Solver Marketplace",
+    "description": "Permissionless solver marketplace: anyone can register, earn fees by delivering native tokens. 6 solvers in demo (4 built-in + 2 custom).",
+    "speakerNotes": ""
+  },
+  {
+    "id": "a1b2c3d4-0007-4000-8000-aabbccddeeff",
+    "position": 7,
+    "filepath": "src/pages/slides/Slide7Closing.tsx",
+    "title": "Private Intent",
+    "description": "Closing: Swap any asset. No bridges. No leaks. Full tech stack: Ika MPC, Encrypt FHE, Claude AI, Anchor Escrow, Open Solver Registry.",
+    "speakerNotes": ""
+  }
+]

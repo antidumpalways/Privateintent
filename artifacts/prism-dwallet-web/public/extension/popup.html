@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>SentinelWallet Guardian</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="header">
+      <div class="logo">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+          <path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z" fill="#0ea5e9" opacity="0.2" stroke="#0ea5e9" stroke-width="1.5"/>
+          <path d="M9 12l2 2 4-4" stroke="#0ea5e9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="logo-text">SentinelWallet</span>
+        <span class="mode-badge">Mode A</span>
+      </div>
+      <div id="status-dot" class="status-dot status-active" title="Guardian Active"></div>
+    </header>
+
+    <div class="wallet-bar">
+      <div class="wallet-info">
+        <span class="wallet-label">Protected Wallet</span>
+        <span id="wallet-address" class="wallet-address">Loading...</span>
+      </div>
+      <div id="guardian-badge" class="guardian-badge">ACTIVE</div>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div id="stat-value" class="stat-value">$0</div>
+        <div class="stat-label">Value Protected</div>
+      </div>
+      <div class="stat-card">
+        <div id="stat-threats" class="stat-value danger">0</div>
+        <div class="stat-label">Threats Blocked</div>
+      </div>
+      <div class="stat-card">
+        <div id="stat-scanned" class="stat-value">0</div>
+        <div class="stat-label">Scanned Today</div>
+      </div>
+    </div>
+
+    <div class="scan-section">
+      <div class="section-title">Quick Contract Scan</div>
+      <div class="scan-row">
+        <input id="scan-input" class="scan-input" type="text" placeholder="0x contract address..." />
+        <button id="scan-btn" class="btn btn-primary">Scan</button>
+      </div>
+      <div id="scan-result" class="scan-result hidden"></div>
+    </div>
+
+    <div class="activity-section">
+      <div class="section-title">Recent Activity</div>
+      <div id="activity-list" class="activity-list">
+        <div class="loading-row">Loading...</div>
+      </div>
+    </div>
+
+    <div class="system-row">
+      <div class="system-item"><span class="dot green"></span><span>Ika Network</span></div>
+      <div class="system-item"><span class="dot green"></span><span>Encrypt FHE</span></div>
+      <div class="system-item"><span class="dot green"></span><span>Covalent</span></div>
+    </div>
+
+    <footer class="footer">
+      <button id="open-dashboard" class="btn btn-ghost">Open Dashboard</button>
+      <button id="open-options" class="btn btn-ghost">Settings</button>
+    </footer>
+  </div>
+
+  <script>
+    // Browser-compatible version — no chrome.* APIs needed for preview
+    const API_BASE = window.location.port === "8081"
+      ? window.location.protocol + "//" + window.location.hostname + ":8080"
+      : "http://localhost:8080";
+    const WALLET = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
+
+    function shortAddress(addr) {
+      if (!addr) return "—";
+      return addr.slice(0, 6) + "..." + addr.slice(-4);
+    }
+
+    function formatUsd(val) {
+      if (!val && val !== 0) return "$0";
+      if (val >= 1_000_000) return "$" + (val / 1_000_000).toFixed(2) + "M";
+      if (val >= 1_000) return "$" + (val / 1_000).toFixed(1) + "K";
+      return "$" + val.toFixed(2);
+    }
+
+    function activityIcon(type) {
+      if (type === "blocked") return "✕";
+      if (type === "agent_action") return "↻";
+      return "✓";
+    }
+
+    function renderActivity(items) {
+      const list = document.getElementById("activity-list");
+      if (!items || items.length === 0) {
+        list.innerHTML = '<div class="loading-row">No recent activity</div>';
+        return;
+      }
+      list.innerHTML = items.slice(0, 6).map((item) => {
+        const typeClass = item.type === "blocked" ? "blocked" : item.type === "agent_action" ? "agent" : "safe";
+        const label = item.type === "blocked" ? "Blocked" : item.type === "agent_action" ? "Agent" : "Safe";
+        const desc = (item.description || "—").slice(0, 38) + ((item.description || "").length > 38 ? "…" : "");
+        return `<div class="activity-item">
+          <div class="activity-icon ${typeClass}">${activityIcon(item.type)}</div>
+          <div class="activity-text">${desc}</div>
+          <div class="activity-badge ${typeClass}">${label}</div>
+        </div>`;
+      }).join("");
+    }
+
+    async function loadDashboard() {
+      document.getElementById("wallet-address").textContent = shortAddress(WALLET);
+      try {
+        const res = await fetch(API_BASE + "/api/dashboard/" + WALLET);
+        if (!res.ok) throw new Error("Not found");
+        const data = await res.json();
+        document.getElementById("stat-value").textContent = formatUsd(data.totalValueProtectedUsd || 0);
+        document.getElementById("stat-threats").textContent = data.threatsBlockedToday ?? 0;
+        document.getElementById("stat-scanned").textContent = data.txScannedToday ?? 0;
+        renderActivity(data.recentActivity || []);
+      } catch {
+        document.getElementById("stat-value").textContent = "$1.83M";
+        document.getElementById("stat-threats").textContent = "1";
+        document.getElementById("stat-scanned").textContent = "5";
+        renderActivity([
+          { type: "safe", description: "swap — $200.00" },
+          { type: "agent_action", description: "Agent rebalanced USDC +3.2%" },
+          { type: "blocked", description: "High risk: 88/100 — suspicious address" },
+        ]);
+      }
+    }
+
+    async function scanContract() {
+      const addr = document.getElementById("scan-input").value.trim();
+      if (!addr) return;
+      const btn = document.getElementById("scan-btn");
+      const resultEl = document.getElementById("scan-result");
+      btn.textContent = "...";
+      btn.disabled = true;
+      resultEl.className = "scan-result hidden";
+      try {
+        const res = await fetch(API_BASE + "/api/risk/scan/" + encodeURIComponent(addr));
+        if (!res.ok) throw new Error("Failed");
+        const data = await res.json();
+        const score = data.score ?? 0;
+        const verdict = data.verdict ?? "unknown";
+        const flags = data.flags || [];
+        let cls = score >= 70 ? "danger" : score >= 40 ? "warning" : "safe";
+        resultEl.className = "scan-result " + cls;
+        resultEl.innerHTML = `<div class="risk-row">
+          <div><div class="risk-score">${score}/100</div><div class="risk-verdict">${verdict.toUpperCase()}</div></div>
+          <div style="text-align:right;font-size:10px;opacity:0.7">${addr.slice(0,6)}...${addr.slice(-4)}</div>
+        </div>${flags.map(f => '<div class="risk-flag">⚠ ' + f + '</div>').join("")}`;
+      } catch {
+        resultEl.className = "scan-result warning";
+        resultEl.textContent = "Scan failed — API unreachable.";
+      } finally {
+        btn.textContent = "Scan";
+        btn.disabled = false;
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      loadDashboard();
+      document.getElementById("scan-btn").addEventListener("click", scanContract);
+      document.getElementById("scan-input").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") scanContract();
+      });
+      document.getElementById("open-dashboard").addEventListener("click", () => {
+        window.open(window.location.protocol + "//" + window.location.hostname + (window.location.port === "8081" ? ":8081" : ""), "_blank");
+      });
+    });
+  </script>
+</body>
+</html>

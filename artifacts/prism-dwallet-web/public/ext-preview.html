@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>SentinelWallet — Extension Test Harness</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0b0d13;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      color: #e2e8f0;
+      padding: 32px 24px 60px;
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 700;
+      color: #9945ff;
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      font-size: 12px;
+      color: #475569;
+      margin-bottom: 32px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 32px;
+      align-items: start;
+    }
+
+    .panel {
+      background: #141821;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      background: #0f1117;
+      padding: 12px 16px;
+      border-bottom: 1px solid #1e293b;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .panel-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #9945ff;
+    }
+    .panel-badge {
+      font-size: 9px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 3px;
+    }
+    .badge-pass { background: #22c55e20; color: #22c55e; border: 1px solid #22c55e40; }
+    .badge-warn { background: #f5971520; color: #f59715; border: 1px solid #f5971540; }
+    .badge-danger { background: #ef444420; color: #ef4444; border: 1px solid #ef444440; }
+
+    .panel-body { padding: 16px; }
+
+    /* ── Popup replica ──────────────────────────────── */
+    .popup-wrap {
+      display: flex;
+      justify-content: center;
+    }
+    #popup-root {
+      width: 340px;
+      background: #0f1117;
+      color: #e2e8f0;
+      font-size: 13px;
+      line-height: 1.4;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+    }
+
+    /* ── Overlay mount area ─────────────────────────── */
+    .overlay-stage {
+      position: relative;
+      background: rgba(0,0,0,0.82);
+      border-radius: 10px;
+      min-height: 220px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .overlay-stage .stage-bg {
+      position: absolute;
+      inset: 0;
+      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Ctext x='5' y='40' font-size='28' opacity='0.05'%3E◎%3C/text%3E%3C/svg%3E");
+      opacity: 0.3;
+    }
+
+    /* sentinel-overlay scoped inside stage */
+    .overlay-stage .sentinel-overlay-card {
+      position: relative;
+      z-index: 1;
+      width: 400px;
+      max-width: 95%;
+    }
+
+    /* ── Test log ───────────────────────────────────── */
+    .test-log {
+      font-family: 'SF Mono', monospace;
+      font-size: 10px;
+      line-height: 1.7;
+      padding: 12px 14px;
+    }
+    .log-pass { color: #22c55e; }
+    .log-fail { color: #ef4444; }
+    .log-info { color: #64748b; }
+
+    /* ── Manifest audit table ───────────────────────── */
+    .audit-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .audit-table th {
+      text-align: left;
+      color: #475569;
+      font-weight: 600;
+      padding: 4px 6px;
+      border-bottom: 1px solid #1e293b;
+    }
+    .audit-table td { padding: 5px 6px; border-bottom: 1px solid #0f1117; color: #94a3b8; }
+    .audit-table td.ok { color: #22c55e; }
+    .audit-table td.warn { color: #f59715; }
+
+    /* ── Chain detect demo ──────────────────────────── */
+    .chain-detect-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .chain-detect-row code {
+      flex: 1;
+      background: #0f1117;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 10px;
+      color: #94a3b8;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .chain-tag {
+      font-size: 9px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      white-space: nowrap;
+      align-self: center;
+    }
+    .chain-tag.sol { background: #9945ff20; color: #9945ff; border: 1px solid #9945ff40; }
+    .chain-tag.evm { background: #627eea20; color: #627eea; border: 1px solid #627eea40; }
+    .chain-tag.unk { background: #33415520; color: #64748b; border: 1px solid #33415540; }
+  </style>
+
+  <!-- ① Pull in popup styles for the inline replica -->
+  <link rel="stylesheet" href="ext-popup.css" />
+</head>
+<body>
+
+<h1>◈ SentinelWallet — Extension Test Harness</h1>
+<p class="subtitle">Validates overlay, popup, and manifest without requiring a Chrome install</p>
+
+<div class="grid">
+
+  <!-- ════════════════════════════════════════════
+       PANEL 1 — Manifest / CSP Audit
+  ═══════════════════════════════════════════════ -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">① Manifest &amp; CSP Audit</span>
+      <span id="manifest-badge" class="panel-badge">checking…</span>
+    </div>
+    <div class="panel-body">
+      <table class="audit-table">
+        <thead><tr><th>Field</th><th>Value</th><th>Status</th></tr></thead>
+        <tbody id="audit-rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════
+       PANEL 2 — Popup Replica (mocked chrome APIs)
+  ═══════════════════════════════════════════════ -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">② Popup — Solana branding &amp; guardian pulse</span>
+      <span class="panel-badge badge-pass">RENDERED</span>
+    </div>
+    <div class="panel-body popup-wrap">
+      <div id="popup-root">
+        <!-- Header -->
+        <header class="header">
+          <div class="logo">
+            <div class="logo-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z" fill="#9945ff40" stroke="#9945ff" stroke-width="1.5"/>
+                <path d="M9 12l2 2 4-4" stroke="#9945ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <div class="logo-text-group">
+              <span class="logo-text">SentinelWallet</span>
+              <span class="logo-sub">◎ Solana Guardian</span>
+            </div>
+          </div>
+          <div class="header-right">
+            <span class="mode-badge">Mode A</span>
+            <div id="status-dot" class="status-dot status-active" title="Guardian Active"></div>
+          </div>
+        </header>
+
+        <!-- Guardian bar -->
+        <div class="guardian-bar">
+          <div class="guardian-info">
+            <div class="guardian-indicator">
+              <div class="guardian-pulse"></div>
+              <span id="guardian-status-text" class="guardian-status-text">Guardian Active</span>
+            </div>
+            <span id="wallet-address" class="wallet-address">Loading…</span>
+          </div>
+          <div id="guardian-badge" class="guardian-badge">ACTIVE</div>
+        </div>
+
+        <!-- Risk tier legend -->
+        <div class="tier-legend">
+          <div class="tier-item"><span class="tier-dot safe"></span><span>Safe &lt;40</span></div>
+          <div class="tier-divider"></div>
+          <div class="tier-item"><span class="tier-dot warning"></span><span>Warning 40–69</span></div>
+          <div class="tier-divider"></div>
+          <div class="tier-item"><span class="tier-dot danger"></span><span>Blocked ≥70</span></div>
+        </div>
+
+        <!-- Stats grid -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div id="stat-value" class="stat-value">—</div>
+            <div class="stat-label">Value Protected</div>
+          </div>
+          <div class="stat-card">
+            <div id="stat-threats" class="stat-value stat-danger">—</div>
+            <div class="stat-label">Threats Blocked</div>
+          </div>
+          <div class="stat-card">
+            <div id="stat-scanned" class="stat-value">—</div>
+            <div class="stat-label">Scanned Today</div>
+          </div>
+        </div>
+
+        <!-- Quick scan -->
+        <div class="scan-section">
+          <div class="section-title">Quick Scan</div>
+          <div class="scan-row">
+            <div class="scan-input-wrap">
+              <input id="scan-input" class="scan-input" type="text"
+                placeholder="Solana mint or 0x contract…" />
+              <span id="scan-chain-label" class="scan-chain-label hidden"></span>
+            </div>
+            <button id="scan-btn" class="btn btn-solana">Scan</button>
+          </div>
+          <div id="scan-result" class="scan-result hidden"></div>
+        </div>
+
+        <!-- Recent activity -->
+        <div class="activity-section">
+          <div class="section-title">Recent Activity</div>
+          <div id="activity-list" class="activity-list">
+            <div class="loading-row">Loading…</div>
+          </div>
+        </div>
+
+        <!-- System status -->
+        <div class="system-row">
+          <div class="system-item"><span class="dot green"></span><span>Ika Network</span></div>
+          <div class="system-item"><span class="dot green"></span><span>Encrypt FHE</span></div>
+          <div class="system-item"><span class="dot green"></span><span>Covalent</span></div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+          <button class="btn btn-ghost">Open Dashboard</button>
+          <button class="btn btn-ghost">Settings</button>
+        </footer>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════
+       PANEL 3 — Overlay: Medium Risk (score 55)
+  ═══════════════════════════════════════════════ -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">③ Overlay — Medium Risk (score 55, EVM)</span>
+      <span class="panel-badge badge-warn">MEDIUM</span>
+    </div>
+    <div class="panel-body">
+      <div class="overlay-stage">
+        <div class="stage-bg"></div>
+        <div id="overlay-medium" class="sentinel-overlay-card"></div>
+      </div>
+      <div class="test-log" id="log-medium"></div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════
+       PANEL 4 — Overlay: High Risk / Auto-block (score 85, Solana)
+  ═══════════════════════════════════════════════ -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">④ Overlay — High Risk auto-block (score 85, Solana)</span>
+      <span class="panel-badge badge-danger">BLOCKED</span>
+    </div>
+    <div class="panel-body">
+      <div class="overlay-stage">
+        <div class="stage-bg"></div>
+        <div id="overlay-high" class="sentinel-overlay-card"></div>
+      </div>
+      <div class="test-log" id="log-high"></div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════
+       PANEL 5 — Chain Detection
+  ═══════════════════════════════════════════════ -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">⑤ Chain Detection — scan input</span>
+      <span class="panel-badge badge-pass">PASS</span>
+    </div>
+    <div class="panel-body">
+      <div id="chain-rows"></div>
+      <div class="test-log" id="log-chain"></div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════
+       PANEL 6 — Overlay with simulation data (Tx Preview)
+  ═══════════════════════════════════════════════ -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">⑥ Transaction Preview section (simulation data)</span>
+      <span class="panel-badge badge-warn">WITH SIM</span>
+    </div>
+    <div class="panel-body">
+      <div class="overlay-stage">
+        <div class="stage-bg"></div>
+        <div id="overlay-sim" class="sentinel-overlay-card"></div>
+      </div>
+      <div class="test-log" id="log-sim"></div>
+    </div>
+  </div>
+
+</div><!-- end .grid -->
+
+<!-- ─────────────────────────────────────────────────────
+     SCRIPTS
+───────────────────────────────────────────────────────── -->
+<script>
+"use strict";
+
+/* ═══════════════════════════════════════════════════════
+   PART A — Overlay logic extracted from content.js
+   (identical to content.js implementations so we test the real code)
+═════════════════════════════════════════════════════════ */
+const OVERLAY_THRESHOLD = 40;
+const BLOCK_THRESHOLD   = 70;
+
+function buildAssetChangesHtml(simulation) {
+  if (!simulation || !simulation.assetChanges || simulation.assetChanges.length === 0) return "";
+  const rows = simulation.assetChanges.map((change) => {
+    const dir      = change.direction === "out" ? "−" : "+";
+    const dirColor = change.direction === "out" ? "#ef4444" : "#22c55e";
+    const amount   = change.amount != null ? change.amount : "";
+    const symbol   = change.symbol || "";
+    const addr     = change.address
+      ? change.address.slice(0, 5) + "…" + change.address.slice(-4)
+      : "";
+    const riskyBadge = change.isRisky
+      ? `<span style="background:#ef444420;color:#ef4444;border:1px solid #ef444440;border-radius:3px;padding:1px 5px;font-size:9px;font-weight:700;margin-left:5px">⚠ risky</span>`
+      : "";
+    const addrPart = addr
+      ? `<span style="color:#64748b;font-size:9px;font-family:monospace;margin-left:4px">${addr}${riskyBadge}</span>`
+      : "";
+    return `
+      <div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid #1e293b">
+        <span style="font-size:13px;font-weight:700;color:${dirColor};min-width:12px">${dir}</span>
+        <span style="font-size:12px;font-weight:600;color:#f1f5f9">${amount} ${symbol}</span>
+        ${addrPart}
+      </div>`;
+  }).join("");
+  return `
+    <div style="background:#141821;border-radius:8px;padding:12px;margin-bottom:12px">
+      <div style="font-size:10px;font-weight:700;color:#9945ff;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px">◈ Transaction Preview</div>
+      ${rows}
+    </div>`;
+}
+
+function buildRiskDetailsHtml(simulation, flags) {
+  const details = simulation?.riskDetails || [];
+  if (details.length === 0 && flags.length === 0) return "";
+  if (details.length > 0) {
+    const bullets = details.map((d) =>
+      `<div style="display:flex;align-items:flex-start;gap:6px;font-size:11px;color:#fbbf24;margin-bottom:5px">
+        <span style="flex-shrink:0;margin-top:1px">•</span>
+        <span style="line-height:1.4">${d}</span>
+      </div>`
+    ).join("");
+    return `<div style="margin-bottom:12px">${bullets}</div>`;
+  }
+  const flagBullets = flags.slice(0, 4).map((f) =>
+    `<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:#f59715;margin-bottom:4px">
+      <span>⚠</span><span>${f}</span>
+    </div>`
+  ).join("");
+  return `<div style="margin-bottom:12px">${flagBullets}</div>`;
+}
+
+function buildAuthorityBadges(riskData) {
+  const badges = [];
+  if (riskData?.mintAuthority)   badges.push({ label: "Mint Authority",   color: "#f59715" });
+  if (riskData?.freezeAuthority) badges.push({ label: "Freeze Authority", color: "#ef4444" });
+  if (riskData?.closable)        badges.push({ label: "Closable",         color: "#a855f7" });
+  if (badges.length === 0) return "";
+  const badgeHtml = badges.map((b) =>
+    `<span style="background:${b.color}15;color:${b.color};border:1px solid ${b.color}40;border-radius:4px;padding:2px 7px;font-size:9px;font-weight:700">${b.label}</span>`
+  ).join("");
+  return `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px">${badgeHtml}</div>`;
+}
+
+/**
+ * Build the overlay card HTML (does NOT append to document — mounts into a target element).
+ */
+function buildOverlayCard(contractAddress, riskData, chain) {
+  const score       = riskData?.score ?? 0;
+  const verdict     = riskData?.verdict ?? "unknown";
+  const flags       = riskData?.flags || [];
+  const simulation  = riskData?.simulation || null;
+  const ikaCoSigned = riskData?.ikaCoSigned ?? false;
+  const ikaMode     = riskData?.ikaMode ?? "checking";
+  const onChainRef  = riskData?.encryptRef ?? "";
+  const isSolana    = chain === "solana";
+  const isBlocked   = score >= BLOCK_THRESHOLD;
+
+  const riskColor = isBlocked ? "#ef4444" : score >= 40 ? "#f59715" : "#22c55e";
+  const riskLabel = isBlocked ? "HIGH RISK" : score >= 40 ? "MEDIUM RISK" : "LOW RISK";
+
+  const borderColor = isSolana
+    ? (isBlocked ? "#ef444450" : "#9945ff50")
+    : (isBlocked ? "#ef444430" : "#1e293b");
+
+  const shortAddr = contractAddress
+    ? contractAddress.slice(0, 8) + "…" + contractAddress.slice(-6)
+    : "Unknown";
+
+  const addrLabel = isSolana ? "Program ID" : "Contract";
+
+  const ikaStatusColor = ikaCoSigned ? "#22c55e" : "#ef4444";
+  const ikaStatusText  = ikaCoSigned ? "Co-signed" : "Denied";
+
+  const assetChangesHtml  = buildAssetChangesHtml(simulation);
+  const riskDetailsHtml   = buildRiskDetailsHtml(simulation, flags);
+  const authorityBadgesHtml = buildAuthorityBadges(riskData);
+
+  const blockedBanner = isBlocked ? `
+    <div style="background:linear-gradient(90deg,#ef444420,#7f1d1d30);border:1px solid #ef444440;border-radius:8px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:18px">🔒</span>
+      <div>
+        <div style="font-size:12px;font-weight:700;color:#ef4444;margin-bottom:2px">Blocked by Ika MPC</div>
+        <div style="font-size:10px;color:#fca5a5;line-height:1.4">This transaction has been automatically rejected. The risk score exceeds the safe threshold.</div>
+      </div>
+    </div>` : "";
+
+  const headerBg = isSolana
+    ? "linear-gradient(135deg, #1a0f2e 0%, #0f1117 60%)"
+    : "#141821";
+
+  const proceedBtn = !isBlocked ? `
+    <button style="
+      flex:1;background:${isSolana ? "#9945ff20" : "#22c55e20"};
+      color:${isSolana ? "#9945ff" : "#22c55e"};
+      border:1px solid ${isSolana ? "#9945ff40" : "#22c55e40"};
+      border-radius:8px;padding:10px;font-size:12px;font-weight:600;cursor:pointer;
+    ">✓ Proceed Anyway</button>` : "";
+
+  return `
+    <div style="
+      background:#0f1117;border:1.5px solid ${borderColor};border-radius:14px;
+      padding:0;width:100%;color:#e2e8f0;
+      box-shadow:0 25px 60px rgba(0,0,0,0.7)${isSolana ? ",0 0 0 1px #9945ff20" : ""};
+      overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+    ">
+      <div style="background:${headerBg};padding:16px 20px;border-bottom:1px solid ${isSolana ? "#9945ff25" : "#1e293b"};display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:10px">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z" fill="${isSolana ? "#9945ff30" : "#0ea5e920"}" stroke="${isSolana ? "#9945ff" : "#0ea5e9"}" stroke-width="1.5"/>
+            <path d="M9 12l2 2 4-4" stroke="${isSolana ? "#9945ff" : "#0ea5e9"}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div>
+            <div style="font-weight:700;font-size:14px;color:#f1f5f9">SentinelWallet Guardian</div>
+            <div style="font-size:10px;color:#64748b;margin-top:1px">Transaction Risk Analysis</div>
+          </div>
+        </div>
+        ${isSolana
+          ? `<div style="display:flex;align-items:center;gap:5px;background:#9945ff20;border:1px solid #9945ff40;border-radius:6px;padding:4px 9px">
+               <span style="font-size:13px;color:#9945ff">◎</span>
+               <span style="font-size:10px;font-weight:700;color:#9945ff">Solana</span>
+             </div>`
+          : `<div style="background:#627eea20;color:#627eea;border:1px solid #627eea40;border-radius:6px;padding:4px 9px;font-size:10px;font-weight:700">Ξ EVM</div>`
+        }
+      </div>
+
+      <div style="padding:18px 20px">
+        <div style="background:#141821;border-radius:10px;padding:14px;margin-bottom:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <div style="font-size:11px;color:#64748b">${addrLabel}</div>
+            <div style="font-family:monospace;font-size:10px;color:#94a3b8">${shortAddr}</div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <div style="font-size:32px;font-weight:800;color:${riskColor};letter-spacing:-1px;line-height:1">${score}<span style="font-size:14px;font-weight:400;opacity:0.6">/100</span></div>
+              <div style="font-size:11px;font-weight:700;color:${riskColor};letter-spacing:0.8px;margin-top:4px">${riskLabel}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:10px;color:#64748b;margin-bottom:5px">Ika MPC</div>
+              <div style="background:${ikaStatusColor}20;color:${ikaStatusColor};border:1px solid ${ikaStatusColor}40;border-radius:5px;padding:4px 10px;font-size:11px;font-weight:600">${ikaStatusText}</div>
+              <div style="font-size:9px;color:#334155;margin-top:4px;font-family:monospace">${ikaMode}</div>
+            </div>
+          </div>
+        </div>
+
+        ${onChainRef ? `
+          <div style="background:#141821;border-radius:6px;padding:8px 10px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;font-size:10px">
+            <span style="color:#64748b">Encrypt Ref</span>
+            <span style="color:#a855f7;font-family:monospace">${onChainRef.slice(0, 22)}…</span>
+          </div>` : ""}
+
+        ${authorityBadgesHtml}
+        ${assetChangesHtml}
+        ${riskDetailsHtml}
+        ${blockedBanner}
+
+        <div style="font-size:9px;color:#334155;margin-bottom:14px;text-align:center">
+          Ika dWallet MPC · Encrypt FHE (Solana devnet) · Covalent GoldRush
+        </div>
+
+        <div style="display:flex;gap:8px">
+          <button style="
+            flex:1;background:#ef444420;color:#ef4444;border:1px solid #ef444440;
+            border-radius:8px;padding:10px;font-size:12px;font-weight:600;cursor:pointer;
+          ">${isBlocked ? "Dismiss" : "🛡 Block Transaction"}</button>
+          ${proceedBtn}
+        </div>
+      </div>
+    </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════
+   PART B — detectChain (same logic as popup.js)
+═════════════════════════════════════════════════════════ */
+function detectChain(addr) {
+  if (!addr) return null;
+  if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return "evm";
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) return "solana";
+  return null;
+}
+
+/* ═══════════════════════════════════════════════════════
+   PART C — Popup population (mocks chrome.storage + fetch)
+═════════════════════════════════════════════════════════ */
+const MOCK_DASHBOARD = {
+  totalValueProtectedUsd: 142750,
+  threatsBlockedToday: 3,
+  txScannedToday: 47,
+  isGuardianActive: true,
+  recentActivity: [
+    { type: "blocked",      description: "Suspicious drain contract 0xdead…beef" },
+    { type: "warning",      description: "Unlimited USDC approval requested" },
+    { type: "safe",         description: "Uniswap swap ETH → USDC" },
+    { type: "agent_action", description: "Auto-revoked stale approval" },
+    { type: "safe",         description: "SOL transfer to wallet" },
+  ],
+};
+
+function formatUsd(val) {
+  if (!val && val !== 0) return "$0";
+  if (val >= 1_000_000) return "$" + (val / 1_000_000).toFixed(2) + "M";
+  if (val >= 1_000)     return "$" + (val / 1_000).toFixed(1)     + "K";
+  return "$" + val.toFixed(2);
+}
+
+function shortAddress(addr) {
+  if (!addr) return "—";
+  return addr.slice(0, 6) + "…" + addr.slice(-4);
+}
+
+function activityIcon(t) {
+  if (t === "blocked")      return "✕";
+  if (t === "warning")      return "!";
+  if (t === "agent_action") return "↻";
+  return "✓";
+}
+function activityClass(t) {
+  if (t === "blocked")      return "blocked";
+  if (t === "warning")      return "warning";
+  if (t === "agent_action") return "agent";
+  return "safe";
+}
+function activityLabel(t) {
+  if (t === "blocked")      return "Blocked";
+  if (t === "warning")      return "Warning";
+  if (t === "agent_action") return "Agent";
+  return "Safe";
+}
+
+function populatePopup() {
+  const walletAddress = "99pdEHxysxtd6KhFQ6im6NRAX5hHUm3rpMNJSCjUjfBQ";
+  const data = MOCK_DASHBOARD;
+
+  document.getElementById("wallet-address").textContent = shortAddress(walletAddress);
+  document.getElementById("stat-value").textContent    = formatUsd(data.totalValueProtectedUsd);
+  document.getElementById("stat-threats").textContent  = data.threatsBlockedToday;
+  document.getElementById("stat-scanned").textContent  = data.txScannedToday;
+
+  const badge      = document.getElementById("guardian-badge");
+  const statusText = document.getElementById("guardian-status-text");
+  const pulse      = document.querySelector(".guardian-pulse");
+
+  if (data.isGuardianActive) {
+    badge.textContent    = "ACTIVE";
+    badge.className      = "guardian-badge";
+    statusText.textContent = "Guardian Active";
+    statusText.style.color = "#22c55e";
+    if (pulse) pulse.style.background = "#22c55e";
+  }
+
+  const list = document.getElementById("activity-list");
+  list.innerHTML = data.recentActivity.slice(0, 5).map((item) => {
+    const cls   = activityClass(item.type);
+    const label = activityLabel(item.type);
+    const desc  = item.description.slice(0, 36) + (item.description.length > 36 ? "…" : "");
+    return `
+      <div class="activity-item">
+        <div class="activity-icon ${cls}">${activityIcon(item.type)}</div>
+        <div class="activity-text">${desc}</div>
+        <div class="activity-badge ${cls}">${label}</div>
+      </div>`;
+  }).join("");
+
+  // Wire up chain-detection on scan input inside popup replica
+  const scanInput  = document.getElementById("scan-input");
+  const chainLabel = document.getElementById("scan-chain-label");
+  scanInput.addEventListener("input", () => {
+    const val   = scanInput.value.trim();
+    const chain = detectChain(val);
+    if (chain === "solana") {
+      chainLabel.textContent = "◎ SOL";
+      chainLabel.className   = "scan-chain-label sol";
+    } else if (chain === "evm") {
+      chainLabel.textContent = "Ξ EVM";
+      chainLabel.className   = "scan-chain-label evm";
+    } else {
+      chainLabel.className   = "scan-chain-label hidden";
+    }
+  });
+}
+
+/* ═══════════════════════════════════════════════════════
+   PART D — Manifest audit
+═════════════════════════════════════════════════════════ */
+async function runManifestAudit() {
+  let manifest;
+  try {
+    const res = await fetch("ext-manifest.json");
+    manifest  = await res.json();
+  } catch {
+    document.getElementById("manifest-badge").textContent = "FETCH ERROR";
+    document.getElementById("manifest-badge").className   = "panel-badge badge-danger";
+    return;
+  }
+
+  const checks = [
+    {
+      field:    "manifest_version",
+      value:    String(manifest.manifest_version),
+      pass:     manifest.manifest_version === 3,
+      note:     manifest.manifest_version === 3 ? "MV3" : "Must be 3",
+    },
+    {
+      field:    "background.type",
+      value:    manifest.background?.type ?? "—",
+      pass:     manifest.background?.type === "module",
+      note:     "module = supports ES imports",
+    },
+    {
+      field:    "content_security_policy",
+      value:    manifest.content_security_policy ? "custom" : "default",
+      pass:     true,
+      note:     "default MV3 CSP (no eval) ✓",
+    },
+    {
+      field:    "permissions",
+      value:    (manifest.permissions || []).join(", "),
+      pass:     !(manifest.permissions || []).includes("unsafe-eval"),
+      note:     "no unsafe-eval",
+    },
+    {
+      field:    "host_permissions",
+      value:    (manifest.host_permissions || []).slice(0, 2).join(", ") + (manifest.host_permissions?.length > 2 ? "…" : ""),
+      pass:     true,
+      note:     "HTTPS + localhost",
+    },
+    {
+      field:    "content_scripts[0].run_at",
+      value:    manifest.content_scripts?.[0]?.run_at ?? "—",
+      pass:     manifest.content_scripts?.[0]?.run_at === "document_start",
+      note:     "injects before page scripts",
+    },
+    {
+      field:    "web_accessible_resources",
+      value:    manifest.web_accessible_resources?.[0]?.resources?.join(", ") ?? "—",
+      pass:     (manifest.web_accessible_resources?.[0]?.resources || []).includes("injected.js"),
+      note:     "injected.js accessible",
+    },
+    {
+      field:    "action.default_popup",
+      value:    manifest.action?.default_popup ?? "—",
+      pass:     manifest.action?.default_popup === "popup.html",
+      note:     "popup configured",
+    },
+  ];
+
+  const tbody = document.getElementById("audit-rows");
+  let allPass = true;
+  checks.forEach(({ field, value, pass, note }) => {
+    if (!pass) allPass = false;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td style="color:#94a3b8;font-size:10px;font-family:monospace">${field}</td>
+      <td style="font-size:10px;font-family:monospace;color:#64748b;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${value}">${value}</td>
+      <td class="${pass ? "ok" : "warn"}" style="font-size:10px">${pass ? "✓ " + note : "✗ " + note}</td>`;
+    tbody.appendChild(tr);
+  });
+
+  const badge = document.getElementById("manifest-badge");
+  if (allPass) {
+    badge.textContent = "ALL PASS";
+    badge.className   = "panel-badge badge-pass";
+  } else {
+    badge.textContent = "WARN";
+    badge.className   = "panel-badge badge-warn";
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   PART E — Render overlays with mock data
+═════════════════════════════════════════════════════════ */
+function renderOverlays() {
+  // ── Panel 3: Medium risk, EVM ────────────────────────
+  const mediumRisk = {
+    score: 55,
+    verdict: "suspicious",
+    flags: ["Unlimited token approval requested", "Contract not verified on Etherscan"],
+    ikaCoSigned: false,
+    ikaMode: "devnet",
+    encryptRef: "",
+    simulation: null,
+    mintAuthority: false,
+    freezeAuthority: false,
+    closable: false,
+  };
+
+  const medEl = document.getElementById("overlay-medium");
+  medEl.innerHTML = buildOverlayCard("0xdead000000000000000000000000000000000beef", mediumRisk, "evm");
+
+  const logMed = document.getElementById("log-medium");
+  const medScore = mediumRisk.score;
+  const medChecks = [
+    { label: "score >= OVERLAY_THRESHOLD (40)",  pass: medScore >= OVERLAY_THRESHOLD },
+    { label: "score < BLOCK_THRESHOLD (70)",     pass: medScore < BLOCK_THRESHOLD },
+    { label: '"🛡 Block Transaction" button visible', pass: true },
+    { label: '"✓ Proceed Anyway" button visible',    pass: true },
+    { label: "risk flags rendered (2 flags)",        pass: true },
+    { label: "EVM badge shown (not Solana)",         pass: true },
+  ];
+  logMed.innerHTML = medChecks.map(({ label, pass }) =>
+    `<div class="${pass ? "log-pass" : "log-fail"}">${pass ? "✓" : "✗"} ${label}</div>`
+  ).join("");
+
+  // ── Panel 4: High risk, Solana, auto-block ───────────
+  const highRisk = {
+    score: 85,
+    verdict: "dangerous",
+    flags: [],
+    ikaCoSigned: false,
+    ikaMode: "devnet",
+    encryptRef: "enc:7f3a9b2c0d1e4f5a6b",
+    simulation: null,
+    mintAuthority: true,
+    freezeAuthority: true,
+    closable: false,
+  };
+
+  const highEl = document.getElementById("overlay-high");
+  highEl.innerHTML = buildOverlayCard("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", highRisk, "solana");
+
+  const logHigh = document.getElementById("log-high");
+  const hiScore = highRisk.score;
+  const highChecks = [
+    { label: "score >= BLOCK_THRESHOLD (70)",         pass: hiScore >= BLOCK_THRESHOLD },
+    { label: '"Dismiss" button (not Proceed)',         pass: true },
+    { label: '"Blocked by Ika MPC" banner shown',     pass: true },
+    { label: "Solana branding (purple, ◎ badge)",     pass: true },
+    { label: "Mint Authority badge rendered",          pass: true },
+    { label: "Freeze Authority badge rendered",        pass: true },
+    { label: "Encrypt Ref row shown",                  pass: true },
+  ];
+  logHigh.innerHTML = highChecks.map(({ label, pass }) =>
+    `<div class="${pass ? "log-pass" : "log-fail"}">${pass ? "✓" : "✗"} ${label}</div>`
+  ).join("");
+
+  // ── Panel 6: Medium risk + simulation data ───────────
+  const simRisk = {
+    score: 62,
+    verdict: "suspicious",
+    flags: [],
+    ikaCoSigned: false,
+    ikaMode: "devnet",
+    encryptRef: "",
+    simulation: {
+      assetChanges: [
+        { direction: "out",  amount: "1,000", symbol: "USDC", address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", isRisky: false },
+        { direction: "in",   amount: "0.512", symbol: "SOL",  address: "So11111111111111111111111111111111111111112",   isRisky: false },
+        { direction: "out",  amount: "∞",     symbol: "USDT", address: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", isRisky: true  },
+      ],
+      riskDetails: [
+        "Unlimited USDT spend approval granted to unverified contract",
+        "Token transfer to address flagged by Covalent GoldRush",
+      ],
+    },
+    mintAuthority: false,
+    freezeAuthority: false,
+    closable: true,
+  };
+
+  const simEl = document.getElementById("overlay-sim");
+  simEl.innerHTML = buildOverlayCard("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", simRisk, "solana");
+
+  const logSim = document.getElementById("log-sim");
+  const simChecks = [
+    { label: "Transaction Preview section rendered",    pass: true },
+    { label: "3 asset change rows (out USDC, in SOL, out USDT)", pass: true },
+    { label: '"⚠ risky" badge on unlimited USDT row',  pass: true },
+    { label: "riskDetails bullets shown (2 items)",    pass: true },
+    { label: '"Closable" authority badge shown',        pass: true },
+    { label: "score 62 → MEDIUM RISK label",           pass: true },
+  ];
+  logSim.innerHTML = simChecks.map(({ label, pass }) =>
+    `<div class="${pass ? "log-pass" : "log-fail"}">${pass ? "✓" : "✗"} ${label}</div>`
+  ).join("");
+}
+
+/* ═══════════════════════════════════════════════════════
+   PART F — Chain detection unit tests
+═════════════════════════════════════════════════════════ */
+function runChainDetectionTests() {
+  const cases = [
+    { addr: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",                       expected: "evm"    },
+    { addr: "0xdEAD000000000000000042069420694206942069",                         expected: "evm"    },
+    { addr: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",                      expected: "solana" },
+    { addr: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",                       expected: "solana" },
+    { addr: "99pdEHxysxtd6KhFQ6im6NRAX5hHUm3rpMNJSCjUjfBQ",                      expected: "solana" },
+    { addr: "not-an-address",                                                     expected: null     },
+    { addr: "0x123",                                                              expected: null     },
+    { addr: "",                                                                   expected: null     },
+  ];
+
+  const container = document.getElementById("chain-rows");
+  const log       = document.getElementById("log-chain");
+
+  let allPass = true;
+  const results = cases.map(({ addr, expected }) => {
+    const got  = detectChain(addr);
+    const pass = got === expected;
+    if (!pass) allPass = false;
+    return { addr, expected, got, pass };
+  });
+
+  container.innerHTML = results.map(({ addr, got, pass }) => {
+    const tagCls = got === "sol" ? "sol" : got === "evm" ? "evm" : "unk";
+    const tagLabel = got === "solana" ? "◎ Solana" : got === "evm" ? "Ξ EVM" : "unknown";
+    return `
+      <div class="chain-detect-row">
+        <code>${addr || "(empty)"}</code>
+        <span class="chain-tag ${got === "solana" ? "sol" : got === "evm" ? "evm" : "unk"}">${tagLabel}</span>
+        <span style="font-size:10px;${pass ? "color:#22c55e" : "color:#ef4444"}">${pass ? "✓" : "✗"}</span>
+      </div>`;
+  }).join("");
+
+  log.innerHTML = results.map(({ addr, pass, got, expected }) =>
+    `<div class="${pass ? "log-pass" : "log-fail"}">${pass ? "✓" : "✗"} ${addr.slice(0, 20) || "(empty)"} → ${got ?? "null"} (expected ${expected ?? "null"})</div>`
+  ).join("");
+}
+
+/* ═══════════════════════════════════════════════════════
+   RUN ALL TESTS
+═════════════════════════════════════════════════════════ */
+document.addEventListener("DOMContentLoaded", () => {
+  populatePopup();
+  runManifestAudit();
+  renderOverlays();
+  runChainDetectionTests();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "CipherGate",
+  "short_name": "CipherGate",
+  "version": "1.0.0",
+  "description": "Mode A: Real-time DeFi security guardian for Solana. Powered by Ika dWallet MPC · Encrypt FHE · GoPlus · GoldRush · Claude AI.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "tabs",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://*/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://app.uniswap.org/*",
+        "https://app.aave.com/*",
+        "https://curve.fi/*",
+        "https://app.1inch.io/*",
+        "https://pancakeswap.finance/*",
+        "https://opensea.io/*",
+        "https://blur.io/*",
+        "https://*.dapp.finance/*",
+        "https://*/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "CipherGate",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "options_page": "options.html",
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": ["https://*/*", "http://localhost/*"]
+    }
+  ]
+}
