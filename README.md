@@ -671,11 +671,242 @@ curl -X POST http://localhost:8080/api/intent/submit \
 
 | Resource | URL |
 |---|---|
-| API | `https://sentinel-riharahap252.replit.app` |
-| Web dashboard | `https://sentinel-riharahap252.replit.app/` |
-| Pitch deck | `https://sentinel-riharahap252.replit.app/pitch-deck/` |
-| Integration health | `https://sentinel-riharahap252.replit.app/api/healthz/integrations` |
-| Live rates | `https://sentinel-riharahap252.replit.app/api/rates` |
+| API | `https://privateintent.fun` |
+| Web dashboard | `https://privateintent.fun/` |
+| Pitch deck | `https://privateintent.fun/pitch-deck/` |
+| Integration health | `https://privateintent.fun/api/healthz/integrations` |
+| Live rates | `https://privateintent.fun/api/rates` |
+
+---
+
+## Workflow Diagrams
+
+Visual overview of Private Intent's core workflows for judges and developers.
+
+---
+
+### 1. Private Intent — Full Lifecycle
+
+How a cross-chain swap intent flows from submission to settlement:
+
+```
+User/Phantom                          API Server                         Solver Network                   Ika gRPC          Encrypt gRPC
+    │                                      │                                  │                             │                  │
+    │  POST /api/intent/submit             │                                  │                             │                  │
+    │ ─────────────────────────────────►    │                                  │                             │                  │
+    │                                      │  FHE seal intent                 │                             │                  │
+    │                                      │ ──────────────────────────────────────────────────────────────►                  │
+    │                                      │ ◄── {ref, ciphertextIdentifiers} ─────────────────────────────                  │
+    │                                      │                                  │                             │                  │
+    │                                      │  Collect solver bids (parallel)  │                             │                  │
+    │                                      │ ───────────────────► 4+ solvers  │                             │                  │
+    │                                      │ ◄── {fee%, ETA, SLA} ────────────                             │                  │
+    │                                      │                                  │                             │                  │
+    │  {intentId, bids, viewingKey}        │                                  │                             │                  │
+    │ ◄──────────────────────────────────  │                                  │                             │                  │
+    │                                      │                                  │                             │                  │
+    │  POST /api/intent/accept             │                                  │                             │                  │
+    │  {intentId, solverId} ──────────►    │                                  │                             │                  │
+    │                                      │  Lock escrow (PDA)               │                             │                  │
+    │                                      │  Grant ResolvedOrder             │                             │                  │
+    │                                      │  ──► solver gets viewingKey      │                             │                  │
+    │                                      │                                  │                             │                  │
+    │                                      │  Execute delivery (async)        │                             │                  │
+    │                                      │ ───────────────────► solver ──────┼──── Ika MPC co-sign ────►  │                  │
+    │                                      │                     │            │        (presign→sign)      │                  │
+    │                                      │                     │            │ ◄── signature ──────────── │                  │
+    │                                      │                     │  Broadcast tx to target chain       │                  │
+    │                                      │ ◄── {deliveryTxId} ──────────────                             │                  │
+    │                                      │                                  │                             │                  │
+    │  POST /api/intent/settle             │                                  │                             │                  │
+    │  {intentId, proofHash} ──────────►   │                                  │                             │                  │
+    │                                      │  Verify proof → release escrow   │                             │                  │
+    │                                      │  (REAL SOL tx to solver address) │                             │                  │
+    │  {status: "settled"}                 │                                  │                             │                  │
+    │ ◄──────────────────────────────────  │                                  │                             │                  │
+```
+
+---
+
+### 2. Shielded Vault — Ed25519 Challenge-Response
+
+How the vault ensures only the Phantom wallet owner can deposit/withdraw:
+
+```
+ User (Phantom)                        API Server
+      │                                      │
+      │  GET /api/vault/challenge            │
+      │  ?address=<phantomPubkey> ──────►    │
+      │                                      │  Generate one-time nonce (5min TTL)
+      │  {nonce, message}                    │
+      │ ◄──────────────────────────────      │
+      │                                      │
+      │  Phantom signMessage(message)        │
+      │  (Ed25519 signature)                 │
+      │                                      │
+      │  POST /api/vault/deposit             │
+      │  {address, amount, nonce, sig} ──►   │
+      │                                      │  Verify Ed25519 sig(nonce+message)
+      │                                      │  └── match? ✅ → deposit
+      │                                      │  └── mismatch → 403 Forbidden
+      │  {status: "ok", balance}             │
+      │ ◄──────────────────────────────      │
+```
+
+---
+
+### 3. Private Drop (Stealth Receive) — Mixing Layer
+
+How stealth addresses work with dark pool mixing for privacy:
+
+```
+  Sender                     API Server                         Dark Pool                      Solver Network
+    │                            │                                  │                              │
+    │  Generate stealth addr     │                                  │                              │
+    │  POST /generate ─────►     │                                  │                              │
+    │                            │  Create chain-aware keypair:     │                              │
+    │                            │  SOL → Ed25519 (base58)          │                              │
+    │                            │  ETH → secp256k1 (0x EIP-55)    │                              │
+    │  {stealthAddr, monitorKey} │                                  │                              │
+    │ ◄─────────────────────     │                                  │                              │
+    │                            │                                  │                              │
+    │  Share stealthAddr         │                                  │                              │
+    │  ────► Sender sends funds  │                                  │                              │
+    │                            │                                  │                              │
+    │  Forward to destination    │                                  │                              │
+    │  POST /forward ───────►    │                                  │                              │
+    │                            │  Verify monitorKey ownership     │                              │
+    │                            │  Verify on-chain balance        │                              │
+    │                            │  ───► Place DPOrder (sell side)  │                              │
+    │                            │       with 2-5min randomized     │                              │
+    │                            │       release delay 🕐           │                              │
+    │  {queued, releaseAt}       │                                  │                              │
+    │ ◄─────────────────────     │                                  │                              │
+    │                            │                                  │                              │
+    │  Poll status (~6s)         │                                  │                              │
+    │  GET /status?monitorKey=   │                                  │                              │
+    │  ────────────────────►     │  Phase 1 "queued"                │                              │
+    │                            │  (menunggu timer release)        │                              │
+    │                            │  Phase 2 "processing"            │                              │
+    │                            │  (blind solver auction) ─────────┼───►  solvers compete        │
+    │                            │  Phase 3 "delivered"             │                              │
+    │  {status: "delivered"}     │  (solver settled, intentId)      │                              │
+    │ ◄─────────────────────     │                                  │                              │
+```
+
+---
+
+### 4. Dark Pool — Blind P2P Order Matching
+
+How orders are sealed and matched without revealing counterparty details:
+
+```
+  Alice                          API Server / Dark Pool                    Bob
+    │                                    │                                  │
+    │  Place sell order                  │                                  │
+    │  POST /darkpool/order              │                                  │
+    │  {side: "sell", tokenIn: SOL,      │                                  │
+    │   tokenOut: ETH, amount: 10} ──►   │                                  │
+    │                                    │  Order sealed (FHE-like):        │
+    │                                    │  only route (SOL→ETH) visible    │
+    │  {orderId, sealed: true}           │                                  │
+    │ ◄──────────────────────────────     │                                  │
+    │                                    │                                  │
+    │                                    │  GET /darkpool/book              │
+    │                                    │ ◄──────────────────────          │
+    │                                    │                                  │
+    │                                    │  {openOrders: [                  │
+    │                                    │    {route: "SOL→ETH",            │
+    │                                    │     side: "SEALED",              │
+    │                                    │     priceLimit: "SEALED",        │
+    │                                    │     amount: "SEALED"}]           │
+    │                                    │ ──────────────────────────►      │
+    │                                    │                                  │
+    │  Place buy order (mirrored route)  │                                  │
+    │  POST /darkpool/order              │                                  │
+    │  {side: "buy", tokenIn: ETH,       │                                  │
+    │   tokenOut: SOL, amount: 0.025} ─► │                                  │
+    │                                    │  Matching engine:                │
+    │                                    │  opposite side + mirrored route  │
+    │                                    │  + compatible price limits       │
+    │                                    │  → match found! ✅              │
+    │  {status: "matched"}               │                                  │
+    │ ◄──────────────────────────────     │                                  │
+```
+
+---
+
+### 5. Native Multi-Chain Wallet (Ika DKG)
+
+How one DKG session derives addresses for all chains simultaneously:
+
+```
+               ┌──────────────────────────────────┐
+               │  POST /native/wallet/create      │
+               │  {chain: "ethereum"}             │
+               └──────────┬───────────────────────┘
+                          │
+                          ▼
+               ┌──────────────────────────────────┐
+               │  Ika gRPC: requestDKG()          │
+               │  └── MPC threshold nodes generate │
+               │      distributed keypair          │
+               └──────────┬───────────────────────┘
+                          │ publicKey
+                          ▼
+    ┌─────────────────────────────────────────────────────┐
+    │         One DKG → Four Chain Addresses              │
+    ├─────────────────────────────────────────────────────┤
+    │                                                     │
+    │   secp256k1 pubkey                                  │
+    │      ├── Ethereum  → 0x... (Sepolia)               │
+    │      ├── Bitcoin   → tb1q... (Testnet3)             │
+    │                                                     │
+    │   Ed25519 pubkey                                    │
+    │      └── Solana    → <base58> (Devnet)              │
+    │                                                     │
+    │   sr25519 pubkey                                    │
+    │      └── Polkadot  → <ss58> (Westend)               │
+    │                                                     │
+    └─────────────────────────────────────────────────────┘
+                          │
+                          ▼
+               ┌──────────────────────────────────┐
+               │  Signing:                        │
+               │  POST /native/sign/eth           │
+               │  POST /native/sign/btc           │
+               │  POST /native/sign/sol           │
+               │                                  │
+               │  All use Ika MPC co-signature    │
+               │  → No private key on any machine │
+               └──────────────────────────────────┘
+```
+
+---
+
+### 6. Blind Solver Auction — Privacy Flow
+
+How the FHE encryption ensures solvers bid without seeing the underlying intent:
+
+```
+  INTENT SUBMITTED                     WHAT SOLVERS SEE                     WHAT WINNER SEES
+  ┌──────────────────┐                ┌──────────────────┐                ┌──────────────────┐
+  │ phantomPubkey    │                │                  │                │ phantomPubkey    │
+  │ fromToken: SOL   │   Encrypt FHE  │ fromToken: SOL   │   Viewing Key  │ fromToken: SOL   │
+  │ toToken: PYUSD   │ ─────────────►  │ toToken: PYUSD   │ ─────────────►  │ toToken: PYUSD   │
+  │ amount: 0.5      │                │ amount: ████████  │                │ amount: 0.5      │
+  │ destination: 0x.. │                │ destination: ████ │                │ destination: 0x.. │
+  │                   │                │ encryptedHash    │                │                   │
+  └──────────────────┘                └──────────────────┘                └──────────────────┘
+         │                                    │                                    │
+         │                                    │                                    │
+    User chooses                              │                              Solver validates
+    best bid                                  │                              has liquidity
+         │                                    │                                    │
+         ▼                                    ▼                                    ▼
+    MEV bots see     ◄──────────────────  Solvers bid only                 Execution proceeds
+    nothing useful   "route + hash"       on fee/ETA/SLA                   with Ika MPC sign
+```
 
 ---
 
