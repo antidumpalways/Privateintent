@@ -77,6 +77,228 @@ Both are essential. Neither is decorative.
 
 ---
 
+## Workflow Diagrams
+
+Interactive diagrams using [Mermaid](https://mermaid.js.org/) — render natively on GitHub and support interactive zoom/pan.
+
+---
+
+### 1. Private Intent — Full Lifecycle
+
+A cross-chain swap intent flowing from submission to on-chain settlement:
+
+```mermaid
+sequenceDiagram
+    actor User as User / Phantom
+    participant API as API Server
+    participant Solvers as Solver Network
+    participant Ika as Ika gRPC
+    participant Encrypt as Encrypt gRPC
+
+    User->>API: POST /api/intent/submit
+    API->>Encrypt: FHE seal intent
+    Encrypt-->>API: {ref, ciphertextId}
+    
+    par Collect solver bids
+        API->>Solvers: Collect bids (parallel)
+        Solvers-->>API: {fee%, ETA, SLA}
+    end
+    
+    API-->>User: {intentId, bids, viewingKey}
+    
+    User->>API: POST /api/intent/accept {intentId, solverId}
+    API->>API: Lock escrow (PDA)
+    API->>Solvers: Grant ResolvedOrder + viewingKey
+    
+    API->>Solvers: Execute delivery (async)
+    Solvers->>Ika: Request MPC co-sign (presign → sign)
+    Ika-->>Solvers: MPC threshold signature
+    Solvers->>Solvers: Broadcast tx to target chain
+    Solvers-->>API: {deliveryTxId}
+    
+    User->>API: POST /api/intent/settle {intentId, proofHash}
+    API->>API: Verify proof → release escrow (REAL SOL tx)
+    API-->>User: {status: "settled"}
+```
+
+---
+
+### 2. Shielded Vault — Ed25519 Challenge-Response
+
+Only the Phantom wallet owner can deposit or withdraw:
+
+```mermaid
+sequenceDiagram
+    actor User as User / Phantom
+    participant API as API Server
+
+    User->>API: GET /api/vault/challenge?address=<pubkey>
+    API->>API: Generate one-time nonce (5min TTL)
+    API-->>User: {nonce, message}
+    
+    User->>User: Phantom signMessage(message) — Ed25519 signature
+    
+    User->>API: POST /api/vault/deposit {address, amount, nonce, sig}
+    alt Valid Ed25519 signature
+        API->>API: ✅ Process deposit
+        API-->>User: {status: "ok", balance}
+    else Invalid / forged signature
+        API-->>User: ❌ 403 Forbidden
+    end
+```
+
+---
+
+### 3. Private Drop (Stealth Receive) — Mixing Layer
+
+Stealth addresses with dark pool mixing for privacy:
+
+```mermaid
+sequenceDiagram
+    actor Sender as Sender
+    participant API as API Server
+    participant Pool as Dark Pool
+    participant Solvers as Solver Network
+
+    Sender->>API: POST /stealth/receive/generate {chain}
+    API->>API: Create chain-aware keypair
+    Note over API: SOL → Ed25519 (base58)<br/>ETH → secp256k1 (0x EIP-55)
+    API-->>Sender: {stealthAddr, monitorKey}
+    
+    Sender->>Sender: Share stealthAddr ← Sender sends funds
+    
+    Sender->>API: POST /stealth/receive/forward {monitorKey, amount}
+    API->>API: Verify monitorKey ownership
+    API->>API: Verify on-chain balance
+    API->>Pool: Place DPOrder (sell side) with 2-5min randomized delay
+    API-->>Sender: {queued, releaseAt, darkPoolOrderId}
+    
+    loop Poll every ~6s
+        Sender->>API: GET /stealth/receive/status?monitorKey=
+        alt Phase 1: queued
+            API-->>Sender: {status: "queued", remainingMs}
+        else Phase 2: processing
+            API->>Solvers: Blind solver auction
+            Solvers-->>API: Solver fills order
+            API-->>Sender: {status: "processing"}
+        else Phase 3: delivered
+            API-->>Sender: {status: "delivered", intentId}
+        end
+    end
+```
+
+---
+
+### 4. Dark Pool — Blind P2P Order Matching
+
+Orders are sealed — only the token route is visible for matching:
+
+```mermaid
+sequenceDiagram
+    actor Alice as Alice (Seller)
+    participant DP as Dark Pool
+    actor Bob as Bob (Buyer)
+
+    Alice->>DP: POST /darkpool/order {side: sell, SOL→ETH}
+    DP->>DP: Seal order (amount/side hidden)
+    DP-->>Alice: {orderId, sealed: true}
+    
+    Bob->>DP: GET /darkpool/book
+    DP-->>Bob: [{route: "SOL→ETH", side: "SEALED", amount: "SEALED"}]
+    
+    Bob->>DP: POST /darkpool/order {side: buy, ETH→SOL}
+    DP->>DP: Matching engine checks opposite side + mirrored route + price
+    alt Match found
+        DP-->>Alice: {status: "matched"}
+        DP-->>Bob: {status: "matched"}
+    else No match
+        DP-->>Bob: {status: "open"}
+    end
+```
+
+---
+
+### 5. Native Multi-Chain Wallet (Ika DKG)
+
+One DKG session derives addresses for all chains simultaneously:
+
+```mermaid
+flowchart TD
+    A["POST /native/wallet/create<br/>{chain: 'ethereum'}"] --> B["Ika gRPC: requestDKG()"]
+    B --> C["MPC threshold nodes<br/>generate distributed keypair"]
+    C --> D["Public Key"]
+    
+    D --> E["secp256k1 pubkey"]
+    E --> F["Ethereum → 0x... (Sepolia)"]
+    E --> G["Bitcoin → tb1q... (Testnet3)"]
+    
+    D --> H["Ed25519 pubkey"]
+    H --> I["Solana → <base58> (Devnet)"]
+    
+    D --> J["sr25519 pubkey"]
+    J --> K["Polkadot → <ss58> (Westend)"]
+    
+    F & G & I & K --> L["Signing via Ika MPC"]
+    L --> M["POST /native/sign/eth"]
+    L --> N["POST /native/sign/btc"]
+    L --> O["POST /native/sign/sol"]
+    
+    style L fill:#6366f1,color:#fff
+    style B fill:#f59e0b,color:#fff
+    style D fill:#10b981,color:#fff
+```
+
+---
+
+### 6. Blind Solver Auction — Privacy Flow
+
+FHE encryption ensures solvers bid without seeing the underlying intent:
+
+```mermaid
+flowchart LR
+    subgraph Submitted["🔒 INTENT SUBMITTED"]
+        direction TB
+        A1["phantomPubkey"]
+        A2["fromToken: SOL"]
+        A3["toToken: PYUSD"]
+        A4["amount: 0.5"]
+        A5["destination: 0x..."]
+    end
+    
+    subgraph Solvers["👁️ WHAT SOLVERS SEE"]
+        direction TB
+        B1["fromToken: SOL"]
+        B2["toToken: PYUSD"]
+        B3["amount: ████████"]
+        B4["destination: ████"]
+        B5["encryptedHash"]
+    end
+    
+    subgraph Winner["🔑 WHAT WINNER SEES"]
+        direction TB
+        C1["phantomPubkey"]
+        C2["fromToken: SOL"]
+        C3["toToken: PYUSD"]
+        C4["amount: 0.5"]
+        C5["destination: 0x..."]
+    end
+    
+    Submitted -->|"Encrypt FHE"| Solvers
+    Solvers -->|"Viewing Key"| Winner
+    
+    Solvers -.->|"Bid on fee/ETA/SLA only"| D["Blind Auction"]
+    D --> E["User selects best bid"]
+    E --> F["Solver validates liquidity"]
+    F --> G["Execution with Ika MPC sign"]
+    
+    style Submitted fill:#1e40af,color:#fff
+    style Solvers fill:#92400e,color:#fff
+    style Winner fill:#065f46,color:#fff
+    style D fill:#6b21a8,color:#fff
+```
+
+---
+
 ## Features
 
 ### 1. Private Intent Engine (ERC-7683-Inspired)
@@ -676,229 +898,6 @@ curl -X POST http://localhost:8080/api/intent/submit \
 | Pitch deck | `https://privateintent.fun/pitch-deck/` |
 | Integration health | `https://privateintent.fun/api/healthz/integrations` |
 | Live rates | `https://privateintent.fun/api/rates` |
-
----
-
-## Workflow Diagrams
-
-Visual overview of Private Intent's core workflows for judges and developers.  
-These diagrams use [Mermaid](https://mermaid.js.org/) — they render natively on GitHub and support interactive zoom/pan.
-
----
-
-### 1. Private Intent — Full Lifecycle
-
-A cross-chain swap intent flowing from submission to on-chain settlement:
-
-```mermaid
-sequenceDiagram
-    actor User as User / Phantom
-    participant API as API Server
-    participant Solvers as Solver Network
-    participant Ika as Ika gRPC
-    participant Encrypt as Encrypt gRPC
-
-    User->>API: POST /api/intent/submit
-    API->>Encrypt: FHE seal intent
-    Encrypt-->>API: {ref, ciphertextId}
-    
-    par Collect solver bids
-        API->>Solvers: Collect bids (parallel)
-        Solvers-->>API: {fee%, ETA, SLA}
-    end
-    
-    API-->>User: {intentId, bids, viewingKey}
-    
-    User->>API: POST /api/intent/accept {intentId, solverId}
-    API->>API: Lock escrow (PDA)
-    API->>Solvers: Grant ResolvedOrder + viewingKey
-    
-    API->>Solvers: Execute delivery (async)
-    Solvers->>Ika: Request MPC co-sign (presign → sign)
-    Ika-->>Solvers: MPC threshold signature
-    Solvers->>Solvers: Broadcast tx to target chain
-    Solvers-->>API: {deliveryTxId}
-    
-    User->>API: POST /api/intent/settle {intentId, proofHash}
-    API->>API: Verify proof → release escrow (REAL SOL tx)
-    API-->>User: {status: "settled"}
-```
-
----
-
-### 2. Shielded Vault — Ed25519 Challenge-Response
-
-Only the Phantom wallet owner can deposit or withdraw:
-
-```mermaid
-sequenceDiagram
-    actor User as User / Phantom
-    participant API as API Server
-
-    User->>API: GET /api/vault/challenge?address=<pubkey>
-    API->>API: Generate one-time nonce (5min TTL)
-    API-->>User: {nonce, message}
-    
-    User->>User: Phantom signMessage(message) — Ed25519 signature
-    
-    User->>API: POST /api/vault/deposit {address, amount, nonce, sig}
-    alt Valid Ed25519 signature
-        API->>API: ✅ Process deposit
-        API-->>User: {status: "ok", balance}
-    else Invalid / forged signature
-        API-->>User: ❌ 403 Forbidden
-    end
-```
-
----
-
-### 3. Private Drop (Stealth Receive) — Mixing Layer
-
-Stealth addresses with dark pool mixing for privacy:
-
-```mermaid
-sequenceDiagram
-    actor Sender as Sender
-    participant API as API Server
-    participant Pool as Dark Pool
-    participant Solvers as Solver Network
-
-    Sender->>API: POST /stealth/receive/generate {chain}
-    API->>API: Create chain-aware keypair
-    Note over API: SOL → Ed25519 (base58)<br/>ETH → secp256k1 (0x EIP-55)
-    API-->>Sender: {stealthAddr, monitorKey}
-    
-    Sender->>Sender: Share stealthAddr ← Sender sends funds
-    
-    Sender->>API: POST /stealth/receive/forward {monitorKey, amount}
-    API->>API: Verify monitorKey ownership
-    API->>API: Verify on-chain balance
-    API->>Pool: Place DPOrder (sell side) with 2-5min randomized delay
-    API-->>Sender: {queued, releaseAt, darkPoolOrderId}
-    
-    loop Poll every ~6s
-        Sender->>API: GET /stealth/receive/status?monitorKey=
-        alt Phase 1: queued
-            API-->>Sender: {status: "queued", remainingMs}
-        else Phase 2: processing
-            API->>Solvers: Blind solver auction
-            Solvers-->>API: Solver fills order
-            API-->>Sender: {status: "processing"}
-        else Phase 3: delivered
-            API-->>Sender: {status: "delivered", intentId}
-        end
-    end
-```
-
----
-
-### 4. Dark Pool — Blind P2P Order Matching
-
-Orders are sealed — only the token route is visible for matching:
-
-```mermaid
-sequenceDiagram
-    actor Alice as Alice (Seller)
-    participant DP as Dark Pool
-    actor Bob as Bob (Buyer)
-
-    Alice->>DP: POST /darkpool/order {side: sell, SOL→ETH}
-    DP->>DP: Seal order (amount/side hidden)
-    DP-->>Alice: {orderId, sealed: true}
-    
-    Bob->>DP: GET /darkpool/book
-    DP-->>Bob: [{route: "SOL→ETH", side: "SEALED", amount: "SEALED"}]
-    
-    Bob->>DP: POST /darkpool/order {side: buy, ETH→SOL}
-    DP->>DP: Matching engine checks opposite side + mirrored route + price
-    alt Match found
-        DP-->>Alice: {status: "matched"}
-        DP-->>Bob: {status: "matched"}
-    else No match
-        DP-->>Bob: {status: "open"}
-    end
-```
-
----
-
-### 5. Native Multi-Chain Wallet (Ika DKG)
-
-One DKG session derives addresses for all chains simultaneously:
-
-```mermaid
-flowchart TD
-    A["POST /native/wallet/create<br/>{chain: 'ethereum'}"] --> B["Ika gRPC: requestDKG()"]
-    B --> C["MPC threshold nodes<br/>generate distributed keypair"]
-    C --> D["Public Key"]
-    
-    D --> E["secp256k1 pubkey"]
-    E --> F["Ethereum → 0x... (Sepolia)"]
-    E --> G["Bitcoin → tb1q... (Testnet3)"]
-    
-    D --> H["Ed25519 pubkey"]
-    H --> I["Solana → <base58> (Devnet)"]
-    
-    D --> J["sr25519 pubkey"]
-    J --> K["Polkadot → <ss58> (Westend)"]
-    
-    F & G & I & K --> L["Signing via Ika MPC"]
-    L --> M["POST /native/sign/eth"]
-    L --> N["POST /native/sign/btc"]
-    L --> O["POST /native/sign/sol"]
-    
-    style L fill:#6366f1,color:#fff
-    style B fill:#f59e0b,color:#fff
-    style D fill:#10b981,color:#fff
-```
-
----
-
-### 6. Blind Solver Auction — Privacy Flow
-
-FHE encryption ensures solvers bid without seeing the underlying intent:
-
-```mermaid
-flowchart LR
-    subgraph Submitted["🔒 INTENT SUBMITTED"]
-        direction TB
-        A1["phantomPubkey"]
-        A2["fromToken: SOL"]
-        A3["toToken: PYUSD"]
-        A4["amount: 0.5"]
-        A5["destination: 0x..."]
-    end
-    
-    subgraph Solvers["👁️ WHAT SOLVERS SEE"]
-        direction TB
-        B1["fromToken: SOL"]
-        B2["toToken: PYUSD"]
-        B3["amount: ████████"]
-        B4["destination: ████"]
-        B5["encryptedHash"]
-    end
-    
-    subgraph Winner["🔑 WHAT WINNER SEES"]
-        direction TB
-        C1["phantomPubkey"]
-        C2["fromToken: SOL"]
-        C3["toToken: PYUSD"]
-        C4["amount: 0.5"]
-        C5["destination: 0x..."]
-    end
-    
-    Submitted -->|"Encrypt FHE"| Solvers
-    Solvers -->|"Viewing Key"| Winner
-    
-    Solvers -.->|"Bid on fee/ETA/SLA only"| D["Blind Auction"]
-    D --> E["User selects best bid"]
-    E --> F["Solver validates liquidity"]
-    F --> G["Execution with Ika MPC sign"]
-    
-    style Submitted fill:#1e40af,color:#fff
-    style Solvers fill:#92400e,color:#fff
-    style Winner fill:#065f46,color:#fff
-    style D fill:#6b21a8,color:#fff
-```
 
 ---
 
