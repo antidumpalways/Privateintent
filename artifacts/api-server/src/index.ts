@@ -6,6 +6,8 @@ import { probeIkaConnectivity } from "./services/ikaMultichain.js";
 import { warmRatesCache } from "./services/liveRates.js";
 import { seedDarkPool, refreshBotOrders, printFundingTable } from "./services/botMarketMaker.js";
 
+process.stdout.write(`[Startup] NODE_ENV=${process.env.NODE_ENV || "undefined"}\n`);
+
 const rawPort = process.env["PORT"];
 
 if (!rawPort) {

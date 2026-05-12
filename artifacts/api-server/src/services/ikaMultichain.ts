@@ -229,6 +229,8 @@ export async function dkgMultichain(curve: IkaCurve): Promise<MultichainDWalletR
   const senderPubkey = getSentinelPubkeyBytes();
   let lastError = "";
 
+  // Try real Ika gRPC DKG in all environments — only fall back to sim on failure
+  // (No longer force-sim in development: the gRPC timeout + retry logic below handles failures gracefully)
   for (let attempt = 1; attempt <= MAX_DKG_RETRIES; attempt++) {
     const sessionId = randomBytes(32);
     try {

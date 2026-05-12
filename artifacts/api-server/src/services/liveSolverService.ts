@@ -64,8 +64,10 @@ function getEthWallet(): ethers.Wallet {
   if (_ethWallet) return _ethWallet;
 
   // 1. Prefer env var — persists across restarts
-  if (process.env.SOLVER_ETH_PRIVATE_KEY) {
-    _ethWallet = new ethers.Wallet(process.env.SOLVER_ETH_PRIVATE_KEY);
+  // Supports both SOLVER_ETH_PRIVATE_KEY (general) and ETH_SOLVER_PRIVATE_KEY (legacy/replit)
+  const ethPk = process.env.SOLVER_ETH_PRIVATE_KEY || process.env.ETH_SOLVER_PRIVATE_KEY;
+  if (ethPk) {
+    _ethWallet = new ethers.Wallet(ethPk);
     process.stdout.write(`[LiveSolver] ETH wallet from env: ${_ethWallet.address}\n`);
     return _ethWallet;
   }
