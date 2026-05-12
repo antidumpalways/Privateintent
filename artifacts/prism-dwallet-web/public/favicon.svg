@@ -1,3 +1,1 @@
-<svg width="180" height="180" viewBox="0 0 180 180" fill="none" xmlns="http://www.w3.org/2000/svg">
-<rect width="180" height="180" rx="36" fill="#FF3C00"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 180 180"><defs><linearGradient id="g" x1="0" y1="0" x2="180" y2="180"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#8b5cf6"/></linearGradient></defs><rect width="180" height="180" rx="36" fill="url(#g)"/><path d="M90 45c-10 0-18 8-18 18v10h-8c-4 0-7 3-7 7v46c0 4 3 7 7 7h52c4 0 7-3 7-7V80c0-4-3-7-7-7h-8V63c0-10-8-18-18-18zm-8 18c0-4.4 3.6-8 8-8s8 3.6 8 8v10H82V63zm-6 22h28v34H76V85z" fill="#fff"/><circle cx="90" cy="100" r="6" fill="#6366f1"/><path d="M87 103h6v8h-6z" fill="#6366f1"/></svg>
