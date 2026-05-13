@@ -55,3 +55,8 @@ attached_assets/
 # Environment variables (sensitive keys)
 .env
 .env.local
+
+# Log files
+*.log
+api-server.log
+api-server-err.log

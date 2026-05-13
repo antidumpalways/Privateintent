@@ -1,127 +1,143 @@
 # PrivateIntent
 
-Welcome to **PrivateIntent** — a privacy-first intent-based application framework for cross-chain swaps with AI-powered features, Ika MPC signing, and Encrypt FHE privacy.
+**Privacy-first cross-chain intent settlement layer**  
+Powered by Ika MPC, Encrypt FHE, and on-chain escrow on Solana + Ethereum.
 
 ## Monorepo Structure
 
 | Path | Description |
 |------|-------------|
-| `artifacts/api-server/` | Express API server (backend) |
-| `artifacts/prism-dwallet-web/` | React + Vite web frontend |
+| `artifacts/api-server/` | API server — core engine with escrow, solver, dark pool |
+| `artifacts/escrow-contract/` | **Ethereum Escrow (Sepolia)** — `PrivateIntentEscrow.sol` |
 | `artifacts/mockup-sandbox/` | Mockup sandbox environment |
 | `artifacts/pitch-deck/` | Pitch deck materials |
+| `artifacts/prism-dwallet-web/` | Prism DWallet web interface (vanilla HTML/JS) |
 | `lib/api-client-react/` | React API client library |
-| `lib/api-spec/` | API specification |
+| `lib/api-spec/` | API specification (Zod contracts) |
 | `lib/api-zod/` | Zod validation schemas |
-| `lib/db/` | Database library (Drizzle ORM) |
-| `lib/integrations/` | Integrations |
+| `lib/db/` | Database library (Drizzle ORM + PostgreSQL) |
+| `lib/integrations/` | General integrations |
 | `lib/integrations-anthropic-ai/` | Anthropic AI integration |
 | `scripts/` | Build & utility scripts |
 
-## Prerequisites
+## 🚀 Deployed Smart Contracts
 
-- **Node.js** >= 20
-- **pnpm** `npm install -g pnpm`
-- **PostgreSQL** 16+ running on port 5432
-- A `.env` file (copy from `.env.example`)
+### Ethereum Sepolia — `PrivateIntentEscrow.sol`
+| Item | Detail |
+|------|--------|
+| **Contract** | `0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751` |
+| **TX Hash** | `0xc3c11d664dc1d90b6321acbbc5d590641bd8690dd76c090c1417b77d599f79f7` |
+| **Block** | 10846917 |
+| **Deployer** | `0xFe4957467b528e6E4F2712DCD3C2D4BaB2CDb6AA` |
+| **Source** | `artifacts/escrow-contract/` |
+| **ABI** | `artifacts/escrow-contract/build/` |
 
-## Quick Start
+**Functions:** `createIntent`, `settleIntent`, `refundIntent`, `disputeIntent`, `getIntent`
 
-### 1. Setup Environment
+### Solana Devnet — Anchor Program
+| Item | Detail |
+|------|--------|
+| **Program ID** | `GJbT5jcR38MzkmsCDrVWrjq2Bvg961CUkMnvUq7naqmq` |
+| **Deployer** | Hardcoded keypair (sentinel) |
+| **Network** | Solana Devnet |
 
-```bash
-# Copy environment file
-cp .env.example .env   # macOS / Linux
-copy .env.example .env  # Windows
+**Service:** `artifacts/api-server/src/services/solanaEscrowService.ts`  
+**Functions:** `settleSolanaEscrow()`, `refundSolanaEscrow()`
 
-# Fill in your values (at minimum DATABASE_URL)
+## 🧠 Architecture
+
+```
+┌──────────────────────────────────────────────────────┐
+│                    PrivateIntent                      │
+├──────────────────────────────────────────────────────┤
+│  1. User submits intent (FHE-sealed via Encrypt)     │
+│  2. Solvers bid blind (route only)                   │
+│  3. User selects → escrow locked on-chain            │
+│  4. Solver delivers via Ika MPC                      │
+│  5. Proof verified → escrow released                 │
+└──────────────────────────────────────────────────────┘
 ```
 
-### 2. Install Dependencies
+### Escrow Flow
+
+| Step | Solana | Ethereum |
+|------|--------|----------|
+| Lock | SOL → sentinel pubkey (SystemProgram.transfer) | ETH → escrow contract (payable) |
+| Settlement | sentinel → solver (SystemProgram.transfer) | `settleIntent()` via sentinel signer |
+| Refund | sentinel → user (SystemProgram.transfer) | `refundIntent()` via sentinel signer |
+| Dispute | (Anchor program pending) | `disputeIntent()` via sentinel |
+
+## 🔧 Backend Services
+
+| Service | File | Description |
+|---------|------|-------------|
+| ETH Escrow | `ethEscrowService.ts` | Sepolia escrow contract integration |
+| Solana Escrow | `solanaEscrowService.ts` | Devnet SOL escrow via sentinel keypair |
+| Solana Broadcast | `solanaBroadcast.ts` | Memo tx broadcast to Solana devnet |
+| Ika MPC | `ika.ts`, `ikaMultichain.ts` | Multi-chain MPC signing |
+| Encrypt FHE | `encrypt.ts` | Fully Homomorphic Encryption |
+| AI Solver | `aiSolverAgent.ts` | Claude-powered autonomous solver |
+| Solver Engine | `solverEngine.ts` | Static route/price solver |
+| Dark Pool MM | `botMarketMaker.ts` | Market maker bot |
+| Live Rates | `liveRates.ts` | CoinGecko price feed |
+| Native Signer | `nativeSigner.ts` | BTC/ETH/SOL native tx signing |
+
+## 🔌 API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/healthz` | Health check |
+| GET | `/healthz/integrations` | Integration status |
+| GET | `/api/escrow/config` | Escrow sentinel pubkey + RPC |
+| POST | `/api/intent/submit` | Submit FHE-sealed intent |
+| GET | `/api/intent/:id` | Get intent details |
+| GET | `/api/intent/history` | Privacy-preserved intent history |
+| GET | `/api/intent/solvers` | List available solvers |
+| POST | `/api/intent/accept` | Accept solver bid → lock escrow |
+| POST | `/api/intent/settle` | Post delivery proof → release escrow |
+| POST | `/api/darkpool/order` | Create dark pool order |
+| GET | `/api/darkpool/orders` | List dark pool orders |
+| POST | `/api/darkpool/match` | Match dark pool orders |
+| GET | `/api/rates` | Live crypto rates |
+
+## Getting Started
 
 ```bash
+# Install dependencies
 pnpm install
-```
 
-### 3. Start PostgreSQL
+# Build all packages
+pnpm build
 
-Make sure PostgreSQL is running on `localhost:5432` with database `private_intent`:
-
-```bash
-# Windows (start service if installed via installer)
-pg_ctl start -D "C:\Program Files\PostgreSQL\17\data"
-
-# macOS (Homebrew)
-brew services start postgresql
-
-# Linux
-sudo systemctl start postgresql
-```
-
-### 4. Run Backend (API Server)
-
-The backend runs on **port 8080**:
-
-```powershell
-# PowerShell (Windows)
+# Run api-server (dev mode)
 cd artifacts/api-server
-$env:NODE_ENV="development"
-$env:PORT="8080"
-$env:DATABASE_URL="postgresql://postgres@localhost:5432/private_intent"
-$env:AI_INTEGRATIONS_ANTHROPIC_API_KEY="your-anthropic-key"
-$env:ETH_SOLVER_PRIVATE_KEY="0x..."
-node ./build.mjs          # Build with esbuild
-node --enable-source-maps ./dist/index.mjs   # Start server
+pnpm dev
+
+# API runs on http://localhost:8080
 ```
 
-```bash
-# Bash (macOS / Linux)
-cd artifacts/api-server
-export NODE_ENV=development
-export PORT=8080
-export DATABASE_URL="postgresql://postgres@localhost:5432/private_intent"
-pnpm run build && pnpm run start
-```
+### Environment Variables
 
-### 5. Run Frontend (Prism DWallet Web)
-
-Open a new terminal. The frontend runs on **port 5173** and proxies `/api` to the backend:
-
-```powershell
-# PowerShell (Windows)
-cd artifacts/prism-dwallet-web
-$env:PORT="5173"
-pnpm run dev
-```
-
-```bash
-# Bash (macOS / Linux)
-cd artifacts/prism-dwallet-web
-PORT=5173 pnpm run dev
-```
-
-### 6. Open in Browser
-
-- **Frontend:** http://localhost:5173
-- **Backend API:** http://localhost:8080/api
-
-## Environment Variables
-
-See [`.env.example`](.env.example) for all variables. Minimum required:
+Copy `.env.example` → `.env` and configure:
 
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
-| `PORT` | API server port (default: 8080) |
-| `AI_INTEGRATIONS_ANTHROPIC_API_KEY` | Anthropic Claude API key |
+| `ESCROW_CONTRACT_ADDRESS` | ETH escrow contract (Sepolia) |
+| `ETH_ESCROW_CONTRACT_ADDRESS` | Alias for above |
+| `SOLANA_ESCROW_PROGRAM_ID` | Solana Anchor program ID |
+| `ETHEREUM_RPC_URL` | Sepolia RPC endpoint |
+| `AI_INTEGRATIONS_ANTHROPIC_API_KEY` | Claude API key |
+| `ETH_SOLVER_PRIVATE_KEY` | Solver ETH wallet PK |
 
 ## Tech Stack
 
 - **Runtime:** Node.js
 - **Package Manager:** pnpm (workspaces)
 - **Language:** TypeScript
-- **Backend:** Express, Drizzle ORM, esbuild
-- **Frontend:** React, Vite, TailwindCSS, shadcn/ui
-- **Cross-chain:** Ika MPC (gRPC), Solana Web3, Ethers.js
-- **Privacy:** Encrypt FHE
+- **Framework:** Express.js
+- **Database:** PostgreSQL + Drizzle ORM
+- **Blockchain:** Solana Devnet + Ethereum Sepolia
+- **MPC:** Ika Network (pre-alpha)
+- **Privacy:** Encrypt FHE (pre-alpha)
 - **AI:** Anthropic Claude

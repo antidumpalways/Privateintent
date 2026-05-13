@@ -10,10 +10,22 @@
   },
   "private": true,
   "devDependencies": {
-    "typescript": "~5.9.2",
-    "prettier": "^3.8.1"
+    "@nomicfoundation/hardhat-toolbox": "^6.1.2",
+    "dotenv": "^17.4.2",
+    "hardhat": "^2.22.0",
+    "prettier": "^3.8.1",
+    "solc": "^0.8.28",
+    "typescript": "~5.9.2"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["puppeteer", "bufferutil", "utf-8-validate", "protobufjs"]
+    "onlyBuiltDependencies": [
+      "puppeteer",
+      "bufferutil",
+      "utf-8-validate",
+      "protobufjs"
+    ]
+  },
+  "dependencies": {
+    "ethers": "^6.16.0"
   }
 }

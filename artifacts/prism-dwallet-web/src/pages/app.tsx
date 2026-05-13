@@ -908,7 +908,16 @@ export default function App() {
       const { Connection, Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } =
         await import("@solana/web3.js");
       const connection = new Connection(cfg.rpcUrl, "confirmed");
-      const lamports = Math.round(parseFloat(amt) * LAMPORTS_PER_SOL);
+
+      // Convert amount to SOL lamports using live exchange rate if fromChain !== SOL
+      const price = getPrice(fromChain); // ETH or SOL price in USD
+      const solPrice = getPrice("SOL");
+      const amtNum = parseFloat(amt);
+      let amtSol = amtNum;
+      if (fromChain !== "SOL" && price && solPrice) {
+        amtSol = amtNum * (price / solPrice);
+      }
+      const lamports = Math.round(amtSol * LAMPORTS_PER_SOL);
       if (!lamports || lamports <= 0) throw new Error("Jumlah tidak valid untuk escrow");
       const { blockhash } = await connection.getLatestBlockhash();
       const tx = new Transaction({ recentBlockhash: blockhash, feePayer: new PublicKey(phantomPubkey) }).add(

@@ -1,0 +1,470 @@
+[
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_sentinel",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "intentId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "fromChain",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "toChain",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "fromToken",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "toToken",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "releaseAfter",
+        "type": "uint256"
+      }
+    ],
+    "name": "IntentCreated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "intentId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "disputer",
+        "type": "address"
+      }
+    ],
+    "name": "IntentDisputed",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "intentId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      }
+    ],
+    "name": "IntentRefunded",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "intentId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "solver",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "deliveryTxHash",
+        "type": "string"
+      }
+    ],
+    "name": "IntentSettled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "oldSentinel",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "newSentinel",
+        "type": "address"
+      }
+    ],
+    "name": "SentinelUpdated",
+    "type": "event"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "string",
+        "name": "fromChain",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "toChain",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "fromToken",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "toToken",
+        "type": "string"
+      },
+      {
+        "internalType": "uint256",
+        "name": "releaseAfter",
+        "type": "uint256"
+      },
+      {
+        "internalType": "string",
+        "name": "proofHash",
+        "type": "string"
+      }
+    ],
+    "name": "createIntent",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "intentId",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "intentId",
+        "type": "uint256"
+      }
+    ],
+    "name": "disputeIntent",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "intentId",
+        "type": "uint256"
+      }
+    ],
+    "name": "getIntent",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "uint256",
+            "name": "id",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address payable",
+            "name": "user",
+            "type": "address"
+          },
+          {
+            "internalType": "address payable",
+            "name": "solver",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amount",
+            "type": "uint256"
+          },
+          {
+            "internalType": "string",
+            "name": "fromChain",
+            "type": "string"
+          },
+          {
+            "internalType": "string",
+            "name": "toChain",
+            "type": "string"
+          },
+          {
+            "internalType": "string",
+            "name": "fromToken",
+            "type": "string"
+          },
+          {
+            "internalType": "string",
+            "name": "toToken",
+            "type": "string"
+          },
+          {
+            "internalType": "uint256",
+            "name": "releaseAfter",
+            "type": "uint256"
+          },
+          {
+            "internalType": "enum PrivateIntentEscrow.IntentStatus",
+            "name": "status",
+            "type": "uint8"
+          },
+          {
+            "internalType": "string",
+            "name": "deliveryTxHash",
+            "type": "string"
+          },
+          {
+            "internalType": "string",
+            "name": "proofHash",
+            "type": "string"
+          },
+          {
+            "internalType": "uint256",
+            "name": "createdAt",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "updatedAt",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct PrivateIntentEscrow.Intent",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getIntentCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "name": "intents",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "id",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address payable",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "internalType": "address payable",
+        "name": "solver",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "string",
+        "name": "fromChain",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "toChain",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "fromToken",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "toToken",
+        "type": "string"
+      },
+      {
+        "internalType": "uint256",
+        "name": "releaseAfter",
+        "type": "uint256"
+      },
+      {
+        "internalType": "enum PrivateIntentEscrow.IntentStatus",
+        "name": "status",
+        "type": "uint8"
+      },
+      {
+        "internalType": "string",
+        "name": "deliveryTxHash",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "proofHash",
+        "type": "string"
+      },
+      {
+        "internalType": "uint256",
+        "name": "createdAt",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "updatedAt",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "nextIntentId",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "intentId",
+        "type": "uint256"
+      }
+    ],
+    "name": "refundIntent",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "sentinel",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "intentId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address payable",
+        "name": "solverAddress",
+        "type": "address"
+      },
+      {
+        "internalType": "string",
+        "name": "deliveryTxHash",
+        "type": "string"
+      }
+    ],
+    "name": "settleIntent",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "newSentinel",
+        "type": "address"
+      }
+    ],
+    "name": "updateSentinel",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+]

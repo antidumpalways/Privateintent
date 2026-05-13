@@ -65,7 +65,7 @@ function getEthWallet(): ethers.Wallet {
 
   // 1. Prefer env var — persists across restarts
   // Supports both SOLVER_ETH_PRIVATE_KEY (general) and ETH_SOLVER_PRIVATE_KEY (legacy/replit)
-  const ethPk = process.env.SOLVER_ETH_PRIVATE_KEY || process.env.ETH_SOLVER_PRIVATE_KEY;
+  const ethPk = (process.env.SOLVER_ETH_PRIVATE_KEY || process.env.ETH_SOLVER_PRIVATE_KEY)?.trim();
   if (ethPk) {
     _ethWallet = new ethers.Wallet(ethPk);
     process.stdout.write(`[LiveSolver] ETH wallet from env: ${_ethWallet.address}\n`);
@@ -439,8 +439,15 @@ async function executeEvmDelivery(
   }
   if (valueWei > maxSend) valueWei = maxSend;
 
+  if (!ethers.isAddress(to)) {
+    return {
+      success: false, txHash: "", explorerUrl: explorerBase, chain: chainLabel, network: networkLabel,
+      fromAddress: from, toAddress: to, amount: amountStr, unit: "ETH",
+      isReal: false, error: `Invalid or missing destination ETH address: "${to}". Ensure you have an ETH address set in your dWallet profile, or provide destinationAddress in the intent.`,
+    };
+  }
+  const toAddr = to;
   try {
-    const toAddr = ethers.isAddress(to) ? to : wallet.address; // fallback to self
     const tx = await connectedWallet.sendTransaction({ to: toAddr, value: valueWei });
     await tx.wait(1);
 
