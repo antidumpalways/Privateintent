@@ -49,7 +49,7 @@ User types intent
         │
         ▼
 4. Escrow lock → ResolvedOrder granted
-   → On-chain escrow locked on Solana devnet (sentinel PDA) or ETH Sepolia (smart contract)
+   → On-chain escrow locked on Solana Devnet (Anchor PDA) or ETH Sepolia (smart contract)
    → Solver granted ResolvedOrder with temporary decrypt access
         │
         ▼
@@ -63,7 +63,7 @@ User types intent
 6. Delivery proof → escrow release (REAL ON-CHAIN TX)
    → Solver posts proof of fill
    → ETH: settleIntent() called on PrivateIntentEscrow contract
-   → SOL: SystemProgram.transfer from sentinel → solver
+   → SOL: release() called on Anchor native program via CPI → SOL → solver
    → Intent marked SETTLED
 ```
 
@@ -80,6 +80,7 @@ User types intent
 | **Block Number** | 10846917 |
 | **Deployer / Sentinel** | `0xFe4957467b528e6E4F2712DCD3C2D4BaB2CDb6AA` |
 | **Source** | `artifacts/escrow-contract/contracts/PrivateIntentEscrow.sol` |
+| **Framework** | Hardhat + Solidity |
 | **ABI** | `artifacts/escrow-contract/build/PrivateIntentEscrow.abi.json` |
 
 **Functions:**
@@ -93,31 +94,45 @@ getIntentCount()                                                                
 sentinel()                                                                      → sentinel address
 ```
 
-### Solana Devnet — Anchor Program
+### Solana Devnet — Native Anchor Program (prism_dwallet_escrow)
 
 | Item | Detail |
 |------|--------|
 | **Program ID** | `GJbT5jcR38MzkmsCDrVWrjq2Bvg961CUkMnvUq7naqmq` |
-| **Sentinel Keypair** | Deployer keypair (hardcoded in `solanaEscrowService.ts`) |
+| **Deployer / Operator** | Hardcoded keypair (see `solanaEscrowService.ts`) |
 | **Network** | Solana Devnet |
-| **Service** | `artifacts/api-server/src/services/solanaEscrowService.ts` |
+| **Language** | Rust (native Solana program, Anchor-compatible wire format) |
+| **Source** | `artifacts/sol-escrow/programs/private_intent_escrow/src/lib.rs` |
+| **Framework** | Anchor 0.30.1 (native, no Anchor SDK) |
+| **PDA Seeds** | `["escrow", intent_id.to_le_bytes()]` |
 
-**Functions:**
+**Instructions (Anchor discriminators):**
 ```
-settleSolanaEscrow(intentId, solverAddress, amountLamports)  → SystemProgram.transfer SOL → solver
-refundSolanaEscrow(intentId, userAddress, amountLamports)    → SystemProgram.transfer SOL → user
-getSolanaEscrowSentinelAddress()                              → sentinel pubkey
-getSentinelBalance()                                          → escrow balance in SOL
+deposit(intent_id: u64, deadline: i64, amount: u64)     → 0xf223c68952e1f2b6
+release(intent_id: u64, solver: Pubkey)                  → 0xfdf90fce1c7fc1f1
+refund(intent_id: u64)                                    → 0x0260b7fb3fd02e2e
+```
+
+**Account layout (98 bytes):**
+```
+8 bytes  → Anchor discriminator for EscrowAccount
+8 bytes  → intent_id (u64)
+32 bytes → depositor (Pubkey)
+32 bytes → solver (Pubkey, default all zeros)
+8 bytes  → amount (u64)
+8 bytes  → deadline (i64)
+1 byte   → released (bool)
+1 byte   → bump
 ```
 
 ### Escrow Flow Comparison
 
-| Step | Solana Devnet | Ethereum Sepolia |
-|------|---------------|------------------|
-| **Lock** | User sends SOL → sentinel pubkey via Phantom | User sends ETH → `createIntent()` (payable) |
-| **Settlement** | `settleSolanaEscrow()` — sentinel signs SystemProgram.transfer → solver | `settleIntent()` called by sentinel signer → ETH released |
-| **Refund** | `refundSolanaEscrow()` — sentinel signs SystemProgram.transfer → user | `refundIntent()` called by sentinel signer → ETH returned |
-| **Dispute** | (Anchor CPI pending) | `disputeIntent()` flags on-chain |
+| Step | Solana Devnet (Anchor Native) | Ethereum Sepolia (Solidity) |
+|------|-------------------------------|------------------------------|
+| **Lock** | User calls `deposit()` → SOL locked in PDA escrow account | User calls `createIntent()` (payable) → ETH in contract |
+| **Settlement** | `release()` called by operator → SOL transferred to solver PDA | `settleIntent()` called by sentinel signer → ETH released |
+| **Refund** | `refund()` called by depositor after deadline → SOL returned | `refundIntent()` called by sentinel → ETH returned |
+| **Dispute** | (Future: add dispute instruction) | `disputeIntent()` flags on-chain |
 
 ---
 
@@ -128,6 +143,37 @@ getSentinelBalance()                                          → escrow balance
 **Remove Encrypt:** Swap intents are submitted to solvers in plaintext. MEV bots observe the token pair and amount from API traffic before routing completes. The blind auction is no longer blind. The MEV-resistance claim is false.
 
 Both are essential. Neither is decorative.
+
+---
+
+## Monorepo Structure
+
+```
+artifacts/
+  api-server/              Express 5 backend (port 8080)
+  prism-dwallet-web/       React 19 + Vite 7 web dashboard (port 8081)
+  escrow-contract/         🔷 Ethereum Sepolia — PrivateIntentEscrow.sol (Solidity)
+  sol-escrow/              🔷 Solana Devnet — private_intent_escrow (Rust native Anchor)
+  mockup-sandbox/          Mockup sandbox environment
+  pitch-deck/              Hackathon pitch deck
+lib/
+  db/                      Drizzle ORM schema + PostgreSQL migrations
+  api-zod/                 Shared Zod validation schemas
+  api-spec/                OpenAPI spec
+  integrations/            General integrations
+  integrations-anthropic-ai/  Anthropic Claude integration wrapper
+scripts/                   Migration helpers
+```
+
+## Database Tables
+
+| Table | Purpose |
+|---|---|
+| `intents` | CrossChainOrder lifecycle — status, bids, escrow, proof |
+| `dwallet_profiles` | Ika DKG outputs — dwalletId, pubkey, viewingKeyHash |
+| `native_wallets` | Multi-chain wallets — pubkeyHex, eth/btc/sol addresses |
+| `vault_balances` | Shielded vault — address → shielded balance |
+| `vault_history` | Vault operation log — deposits, withdrawals |
 
 ---
 
@@ -164,9 +210,9 @@ sequenceDiagram
     
     User->>API: POST /api/intent/accept {intentId, solverId}
     alt Chain = ETH
-        API->>ETH: createIntent() — lock ETH in escrow
+        API->>ETH: createIntent() — lock ETH in escrow contract
     else Chain = SOL
-        API->>SOL: Lock SOL via sentinel PDA
+        API->>SOL: deposit() — lock SOL in Anchor PDA
     end
     API->>Solvers: Grant ResolvedOrder + viewingKey
     
@@ -182,7 +228,7 @@ sequenceDiagram
     alt Chain = ETH
         API->>ETH: settleIntent() — release ETH to solver
     else Chain = SOL
-        API->>SOL: SystemProgram.transfer — release SOL to solver
+        API->>SOL: release() — Anchor CPI transfer SOL to solver
     end
     
     API-->>User: {status: "settled", releaseTxId}
@@ -391,7 +437,7 @@ The core engine implements the full CrossChainOrder lifecycle with **real on-cha
 
 **On-chain escrow settlement:**
 - **ETH Sepolia:** `settleIntent()` called on `PrivateIntentEscrow` contract at `0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751`
-- **Solana Devnet:** SystemProgram.transfer signed by sentinel keypair — verifiable on Solana Explorer
+- **Solana Devnet:** `release()` Anchor instruction called via CPI → SOL transferred from PDA to solver
 
 ---
 
@@ -589,12 +635,13 @@ Returns status for: Ika gRPC (latency probe), Encrypt gRPC, Anthropic Claude, So
 │  │                                                                       │
 │  │  ┌─────────────────────────────┐    ┌──────────────────────────┐     │
 │  │  │  ETH Sepolia                │    │  Solana Devnet            │     │
-│  │  │  PrivateIntentEscrow.sol    │    │  Anchor Program           │     │
+│  │  │  PrivateIntentEscrow.sol    │    │  private_intent_escrow    │     │
 │  │  │  0x8b72116ca689...d751      │    │  GJbT5jcR38...aqmq       │     │
+│  │  │  Solidity (Hardhat)         │    │  Rust (Anchor native)    │     │
 │  │  │                             │    │                           │     │
-│  │  │  createIntent()  payable    │    │  sentinel keypair         │     │
-│  │  │  settleIntent()  release    │    │  SystemProgram.transfer   │     │
-│  │  │  refundIntent()  return     │    │  (settle / refund)        │     │
+│  │  │  createIntent()  payable    │    │  deposit() → PDA lock    │     │
+│  │  │  settleIntent()  release    │    │  release() → CPI tx      │     │
+│  │  │  refundIntent()  return     │    │  refund() → depositor    │     │
 │  │  │  disputeIntent() flag       │    │                           │     │
 │  │  └─────────────────────────────┘    └──────────────────────────┘     │
 │  │                                                                       │
@@ -610,8 +657,8 @@ Returns status for: Ika gRPC (latency probe), Encrypt gRPC, Anthropic Claude, So
 
 | Service | File | Description |
 |---------|------|-------------|
-| ETH Escrow | `ethEscrowService.ts` | Sepolia escrow contract integration |
-| Solana Escrow | `solanaEscrowService.ts` | Devnet SOL escrow via sentinel keypair |
+| ETH Escrow | `ethEscrowService.ts` | Sepolia `PrivateIntentEscrow.sol` integration |
+| Solana Escrow | `solanaEscrowService.ts` | Devnet Anchor native program via CPI |
 | Solana Broadcast | `solanaBroadcast.ts` | Memo tx broadcast to Solana devnet |
 | Ika MPC | `ika.ts`, `ikaMultichain.ts` | Multi-chain MPC signing |
 | Encrypt FHE | `encrypt.ts` | Fully Homomorphic Encryption |
@@ -621,23 +668,13 @@ Returns status for: Ika gRPC (latency probe), Encrypt gRPC, Anthropic Claude, So
 | Live Rates | `liveRates.ts` | CoinGecko price feed |
 | Native Signer | `nativeSigner.ts` | BTC/ETH/SOL native tx signing |
 
-## Database Tables
-
-| Table | Purpose |
-|---|---|
-| `intents` | CrossChainOrder lifecycle — status, bids, escrow, proof |
-| `dwallet_profiles` | Ika DKG outputs — dwalletId, pubkey, viewingKeyHash |
-| `native_wallets` | Multi-chain wallets — pubkeyHex, eth/btc/sol addresses |
-| `vault_balances` | Shielded vault — address → shielded balance |
-| `vault_history` | Vault operation log — deposits, withdrawals |
-
 ## External Networks
 
 | Network | Endpoint | Used For |
 |---|---|---|
 | **Ika devnet** | `pre-alpha-dev-1.ika.ika-network.net:443` | MPC DKG + co-sign |
 | **Encrypt devnet** | `pre-alpha-dev-1.encrypt.ika-network.net:443` | FHE intent seal |
-| **Solana devnet** | `https://api.devnet.solana.com` | Escrow PDA, memo tx, SOL balance |
+| **Solana devnet** | `https://api.devnet.solana.com` | Escrow PDA, CPI, SOL balance |
 | **ETH Sepolia** | `https://ethereum-sepolia-rpc.publicnode.com` | ETH balance + broadcast + escrow contract |
 | **CoinGecko** | `https://api.coingecko.com` | Live SOL/ETH/PYUSD prices |
 
@@ -727,7 +764,7 @@ Copy `.env.example` → `.env` and configure:
 | `AI_INTEGRATIONS_ANTHROPIC_API_KEY` | ✅ | Claude API key |
 | `ESCROW_CONTRACT_ADDRESS` | ✅ | ETH escrow contract on Sepolia |
 | `ETH_ESCROW_CONTRACT_ADDRESS` | ✅ | Alias for above |
-| `SOLANA_ESCROW_PROGRAM_ID` | ✅ | Anchor program ID on Solana Devnet |
+| `SOLANA_ESCROW_PROGRAM_ID` | ✅ | Solana Anchor native program ID |
 | `ETHEREUM_RPC_URL` | ✅ | Sepolia RPC endpoint |
 | `ETH_SOLVER_PRIVATE_KEY` | ⬜ | Solver ETH wallet PK (for real testnet delivery) |
 | `SOLANA_SECRET_KEY_ARRAY` | ⬜ | Persist sentinel keypair across restarts |
@@ -751,6 +788,9 @@ Copy `.env.example` → `.env` and configure:
 | Node.js | 20+ |
 | pnpm | 9+ |
 | PostgreSQL | 14+ |
+| Rust (for Solana program) | 1.75+ |
+| Solana CLI | 1.18+ |
+| Anchor CLI | 0.30.1 |
 
 ### Quick Start
 
@@ -793,7 +833,7 @@ curl http://localhost:8080/api/rates
 
 ## Escrow Contract Deployment
 
-### ETH Sepolia
+### ETH Sepolia (Solidity)
 
 ```bash
 cd artifacts/escrow-contract
@@ -802,13 +842,34 @@ npx hardhat compile
 npx hardhat run scripts/deploy-simple.js --network sepolia
 ```
 
-Contract address: `0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751`  
-View on: [Sepolia Etherscan](https://sepolia.etherscan.io/address/0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751)
+Contract: `0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751`  
+[View on Sepolia Etherscan](https://sepolia.etherscan.io/address/0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751)
 
-### Solana Devnet
+### Solana Devnet (Rust Anchor Native)
 
-Anchor program ID: `GJbT5jcR38MzkmsCDrVWrjq2Bvg961CUkMnvUq7naqmq`  
-Sentinel keypair is hardcoded in `solanaEscrowService.ts`
+```bash
+cd artifacts/sol-escrow
+
+# Build the program
+anchor build
+
+# Deploy to devnet
+anchor deploy --provider.cluster devnet
+
+# Program ID: GJbT5jcR38MzkmsCDrVWrjq2Bvg961CUkMnvUq7naqmq
+# Already deployed and verified on-chain
+```
+
+**Source:** `artifacts/sol-escrow/programs/private_intent_escrow/src/lib.rs`
+
+**Instructions:**
+| Discriminator | Instruction | Args |
+|---|---|---|
+| `0xf223c68952e1f2b6` | `deposit` | `(intent_id: u64, deadline: i64, amount: u64)` |
+| `0xfdf90fce1c7fc1f1` | `release` | `(intent_id: u64, solver: Pubkey)` |
+| `0x0260b7fb3fd02e2e` | `refund` | `(intent_id: u64)` |
+
+**PDA:** `["escrow", intent_id.to_le_bytes()]` — 98 bytes account space
 
 ---
 
@@ -817,6 +878,7 @@ Sentinel keypair is hardcoded in `solanaEscrowService.ts`
 | Claim | How to verify |
 |---|---|
 | **ETH escrow contract is real** | View on [Sepolia Etherscan](https://sepolia.etherscan.io/address/0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751) — verified bytecode, deploy tx, sentinel address |
+| **Solana Anchor program is real** | `solana program show GJbT5jcR38MzkmsCDrVWrjq2Bvg961CUkMnvUq7naqmq --url devnet` → shows executable data, authority, slot |
 | **Ika MPC DKG is real** | `POST /native/wallet/create` → inspect `mode: "devnet"` + `attestationHex` in response |
 | **Encrypt FHE seal is real** | `POST /api/intent/submit` → `crossChainOrder.encryptedOrderData` is an on-chain ciphertext commitment |
 | **Blind auction is blind** | `GET /api/intent/solvers` — `inputAmount` reads `"SEALED (Encrypt FHE — MEV shield)"` |
@@ -842,12 +904,13 @@ Sentinel keypair is hardcoded in `solanaEscrowService.ts`
 
 - **Runtime:** Node.js 20+
 - **Package Manager:** pnpm (workspaces)
-- **Language:** TypeScript
+- **Language:** TypeScript, Rust (Solana program), Solidity (ETH contract)
 - **Backend Framework:** Express 5
 - **Frontend Framework:** React 19 + Vite 7
 - **Database:** PostgreSQL + Drizzle ORM
 - **Blockchain (ETH):** Ethereum Sepolia + Hardhat + ethers.js
-- **Blockchain (SOL):** Solana Devnet + @solana/web3.js + Anchor
+- **Blockchain (SOL):** Solana Devnet + @solana/web3.js + Anchor 0.30.1
+- **Solana Program:** Rust native (Anchor-compatible wire format)
 - **MPC:** Ika Network (pre-alpha) — gRPC
 - **Privacy:** Encrypt FHE (pre-alpha) — gRPC
 - **AI:** Anthropic Claude (haiku-4-5)
