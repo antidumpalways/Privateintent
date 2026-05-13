@@ -47,15 +47,40 @@ Powered by Ika MPC, Encrypt FHE, and on-chain escrow on Solana + Ethereum.
 ## 🧠 Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    PrivateIntent                      │
-├──────────────────────────────────────────────────────┤
-│  1. User submits intent (FHE-sealed via Encrypt)     │
-│  2. Solvers bid blind (route only)                   │
-│  3. User selects → escrow locked on-chain            │
-│  4. Solver delivers via Ika MPC                      │
-│  5. Proof verified → escrow released                 │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         PrivateIntent                                    │
+│         Privacy-first Cross-Chain Intent Settlement Layer                 │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────┐    ┌───────────┐    ┌──────────────┐    ┌──────────────┐  │
+│  │  User     │    │  Encrypt  │    │  Ika MPC     │    │  Solver      │  │
+│  │ (Phantom) │───▶│  FHE      │───▶│  Network     │───▶│  Network     │  │
+│  │  Wallet   │    │  Seal     │    │  Co-sign     │    │  (AI + MM)   │  │
+│  └──────────┘    └───────────┘    └──────────────┘    └──────────────┘  │
+│       │                                                      ▲           │
+│       │  ① Submit intent (FHE-sealed)                        │           │
+│       │  ② Solvers bid blind                                 │           │
+│       │  ③ User accepts → ESCROW LOCKED                      │ ⑤ Proof   │
+│       ▼                                                      │           │
+│  ┌───────────────────────────────────────────────────────────┘           │
+│  │                                                                       │
+│  │  ┌─────────────────────┐          ┌────────────────────────┐         │
+│  │  │  ETH Sepolia        │          │  Solana Devnet          │         │
+│  │  │  PrivateIntentEscrow│          │  Anchor Program         │         │
+│  │  │  0x8b72...d751      │          │  GJbT5jc...aqmq        │         │
+│  │  │                     │          │                         │         │
+│  │  │  createIntent()     │          │  sentinel keypair       │         │
+│  │  │  settleIntent()     │          │  SystemProgram.transfer │         │
+│  │  │  refundIntent()     │          │  (settle/refund)        │         │
+│  │  │  disputeIntent()    │          │                         │         │
+│  │  └─────────────────────┘          └────────────────────────┘         │
+│  │                                                                       │
+│  └──────────────────────────── ON-CHAIN ESCROW ─────────────────────────┘│
+│                                                                          │
+│  ④ Solver delivers on destination chain via Ika MPC                     │
+│  ⑤ Settlement: proof verified → escrow released on-chain                │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Escrow Flow
