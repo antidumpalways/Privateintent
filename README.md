@@ -821,7 +821,7 @@ SENTINEL_ETH_ADDRESS=0xFe4957467b528e6E4F2712DCD3C2D4BaB2CDb6AA
 |---|---|
 | Node.js | 20+ |
 | pnpm | 9+ |
-| PostgreSQL | 14+ (optional — API runs without it, agent loop logs warnings) |
+| PostgreSQL | 17 (installed at `C:\Program Files\PostgreSQL\17`, running on port 5432) |
 | Git | 2+ |
 
 ### Quick Start
@@ -864,9 +864,8 @@ curl http://localhost:8080/api/rates
 
 ### ⚠️ Known Issues
 
-- **PostgreSQL not connected**: Server runs fine without it. Only the agent loop (30s cron) logs `ECONNREFUSED`. Install PostgreSQL 14+ and create database `privateintent` to fix.
 - **Typecheck (`pnpm run build`)**: Full monorepo typecheck fails due to a pre-existing TS error in `@ika.xyz/pre-alpha-solana-client`. Individual projects pass: `pnpm --filter @workspace/api-server run typecheck` passes.
-- **Docker not running**: If Docker Desktop isn't active, you can't spin up PostgreSQL via container. Install PostgreSQL natively instead.
+- **Port 5433 conflict**: This project expects PostgreSQL on port 5433 by default, but the local install uses port 5432. Update `.env` accordingly (already done).
 
 ---
 
