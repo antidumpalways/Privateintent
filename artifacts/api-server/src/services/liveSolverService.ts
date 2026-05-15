@@ -39,7 +39,7 @@ function makeBtcSigner(privKeyBytes: Buffer): { publicKey: Buffer; sign(hash: Bu
     publicKey: compressedPubkey,
     sign(hash: Buffer): Buffer {
       const sig = secp256k1.sign(hash, privKeyBytes, { lowS: true });
-      return Buffer.from(sig.toDERRawBytes());
+      return Buffer.from((sig as any).toDERRawBytes());
     },
   };
 }
@@ -68,7 +68,6 @@ function getEthWallet(): ethers.Wallet {
   const ethPk = (process.env.SOLVER_ETH_PRIVATE_KEY || process.env.ETH_SOLVER_PRIVATE_KEY)?.trim();
   if (ethPk) {
     _ethWallet = new ethers.Wallet(ethPk);
-    process.stdout.write(`[LiveSolver] ETH wallet from env: ${_ethWallet.address}\n`);
     return _ethWallet;
   }
 
@@ -77,19 +76,17 @@ function getEthWallet(): ethers.Wallet {
     try {
       const data = JSON.parse(readFileSync(ETH_WALLET_PATH, "utf8")) as { pk: string };
       _ethWallet = new ethers.Wallet(data.pk);
-      process.stdout.write(`[LiveSolver] ETH wallet loaded: ${_ethWallet.address}\n`);
       return _ethWallet;
     } catch { /* fall through */ }
   }
 
   // 3. Generate new — will need funding
-  _ethWallet = ethers.Wallet.createRandom();
+  const hdWallet = ethers.Wallet.createRandom();
+  _ethWallet = new ethers.Wallet(hdWallet.privateKey);
   try {
     writeFileSync(ETH_WALLET_PATH, JSON.stringify({ pk: _ethWallet.privateKey }), { mode: 0o600 });
   } catch { /* persistence non-fatal */ }
 
-  process.stdout.write(`[LiveSolver] ETH wallet generated: ${_ethWallet.address}\n`);
-  process.stdout.write(`[LiveSolver] Fund with Sepolia ETH at https://sepoliafaucet.com: ${_ethWallet.address}\n`);
   return _ethWallet;
 }
 

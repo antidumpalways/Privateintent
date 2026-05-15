@@ -93,7 +93,7 @@ export function getRateSync(from: string, to: string): number {
 export function getPriceSync(symbol: string): number {
   if (symbol === "PYUSD") return 1;
   const prices = _cache?.prices ?? FALLBACK_PRICES;
-  return (prices as Record<string, number>)[symbol] ?? 1;
+  return (prices as unknown as Record<string, number>)[symbol] ?? 1;
 }
 
 /** Warm the cache on startup (call once at boot, non-fatal) */

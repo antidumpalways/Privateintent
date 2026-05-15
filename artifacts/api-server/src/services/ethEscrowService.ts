@@ -9,8 +9,8 @@
  *   2. Solver delivers on destination chain
  *   3. Sentinel (live solver) calls settleIntent() → ETH released to solver
  *   4. OR sentinel calls refundIntent() → ETH returned to user
+ *   5. Sentinel can call deposit() to add more ETH or update deadline
  */
-
 import { ethers } from "ethers";
 
 // ─── ABI ──────────────────────────────────────────────────────────────────────
@@ -22,6 +22,7 @@ const ESCROW_ABI = [
   "function getIntent(uint256 intentId) external view returns (tuple(uint256 id, address user, address solver, uint256 amount, string fromChain, string toChain, string fromToken, string toToken, uint256 releaseAfter, uint8 status, string deliveryTxHash, string proofHash, uint256 createdAt, uint256 updatedAt))",
   "function getIntentCount() external view returns (uint256)",
   "function sentinel() external view returns (address)",
+  "function deposit(uint256 intentId, uint256 deadline) external payable"
 ];
 
 const SEPOLIA_RPC = process.env.SEPOLIA_RPC ?? "https://ethereum-sepolia-rpc.publicnode.com";
@@ -78,12 +79,12 @@ export async function createEthEscrow(
   releaseAfter: number = 0,
 ): Promise<number> {
   if (!CONTRACT_ADDRESS) throw new Error("ETH_ESCROW_CONTRACT_ADDRESS not set");
-  
+   
   const signer = getSentinelSigner();
   if (!signer) throw new Error("No signer available for ETH escrow");
-  
+   
   const contract = new ethers.Contract(CONTRACT_ADDRESS, ESCROW_ABI, signer);
-  
+   
   const tx = await contract.createIntent(
     fromChain,
     toChain,
@@ -94,17 +95,44 @@ export async function createEthEscrow(
     { value: amountWei },
   );
   const receipt = await tx.wait(1);
-  
+   
   // Parse logs to get intentId
   const parsedLog = contract.interface.parseLog({
     topics: receipt.logs[0].topics,
     data: receipt.logs[0].data,
   });
-  
+   
   const intentId = Number(parsedLog?.args?.intentId ?? 0);
   console.log(`[EthEscrow] Intent #${intentId} created — tx=${receipt.hash}`);
-  
+   
   return intentId;
+}
+
+/**
+ * Deposit more ETH into an existing intent and/or update its deadline.
+ * @param intentId The intent ID
+ * @param amountWei Additional ETH to lock (in wei, 0 if only updating deadline)
+ * @param deadline Optional new releaseAfter timestamp (0 to keep unchanged)
+ * @returns Transaction hash
+ */
+export async function depositEthEscrow(
+  intentId: number,
+  amountWei: bigint = 0n,
+  deadline: number = 0,
+): Promise<string | null> {
+  if (!CONTRACT_ADDRESS) throw new Error("ETH_ESCROW_CONTRACT_ADDRESS not set");
+   
+  const signer = getSentinelSigner();
+  if (!signer) throw new Error("No signer available for ETH escrow");
+   
+  const contract = new ethers.Contract(CONTRACT_ADDRESS, ESCROW_ABI, signer);
+   
+  const tx = await contract.deposit(intentId, deadline, { value: amountWei });
+  const receipt = await tx.wait(1);
+   
+  console.log(`[EthEscrow] Deposit to intent #${intentId} — tx=${receipt.hash}`);
+   
+  return receipt.hash;
 }
 
 /**
@@ -117,7 +145,7 @@ export async function settleEthEscrow(
 ): Promise<string | null> {
   const contract = getContract();
   if (!contract) return null;
-  
+   
   try {
     const tx = await contract.settleIntent(intentId, solverAddress, deliveryTxHash);
     const receipt = await tx.wait(1);
@@ -135,7 +163,7 @@ export async function settleEthEscrow(
 export async function refundEthEscrow(intentId: number): Promise<string | null> {
   const contract = getContract();
   if (!contract) return null;
-  
+   
   try {
     const tx = await contract.refundIntent(intentId);
     const receipt = await tx.wait(1);
@@ -153,7 +181,7 @@ export async function refundEthEscrow(intentId: number): Promise<string | null> 
 export async function getEthEscrowIntent(intentId: number): Promise<EthEscrowIntent | null> {
   const contract = getContract();
   if (!contract) return null;
-  
+   
   try {
     const intent = await contract.getIntent(intentId);
     return {

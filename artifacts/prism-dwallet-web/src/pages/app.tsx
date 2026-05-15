@@ -1,179 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useLocation } from "wouter";
 import { useWallet } from "@/lib/wallet-context";
-
-const API = import.meta.env.VITE_API_URL ?? "";
-
-const P  = "#7c3aed";
-const M  = "#10b981";
-const BG = "#0a0b14";
-
-type SolverStrategy = "aggressive" | "instant" | "premium" | "ai" | "custom" | "live";
-
-interface SolverBid {
-  solverId: string; solverName: string; solverDescription: string;
-  solverStrategy?: SolverStrategy; fromChain: string; toChain: string;
-  fromToken: string; toToken: string; inputAmount: string; outputAmount: string;
-  feePercent: number; feeAmount: string; estimatedSeconds: number; reputationScore: number;
-  sla?: string; erc7683Compliant?: boolean;
-  chainDetails: { network: string; explorerUrl: string; nativeSign: string };
-  isCustomSolver?: boolean; operatorAddress?: string;
-}
-
-interface CrossChainOrderView {
-  standard?: string;
-  orderDataType?: string;
-  originChainId?: string;
-  destinationChainId?: string;
-  inputToken?: string;
-  inputAmount?: string;
-  outputToken?: string;
-  fillDeadline?: string;
-  privacyNote?: string;
-}
-
-interface IntentResult {
-  intentId: number; status: string; encryptedIntentId: string;
-  encryptedIntentHash: string; encryptMode: string;
-  crossChainOrder?: CrossChainOrderView; viewingKey?: string; standard?: string;
-  bids: SolverBid[]; bestBid: SolverBid; expiresAt: string;
-  releaseAfter?: string | null;
-  aiSolverIncluded?: boolean; customSolverCount?: number; totalSolvers?: number;
-}
-
-interface RegisteredSolver {
-  id: string; name: string; description: string; type: string;
-  baseFeePercent: number | string; supportedFromChains: string[]; supportedToChains: string[];
-  totalBids?: number; wins?: number; operatorAddress?: string;
-}
-
-interface DisputeResult {
-  verdict: "release" | "refund" | "partial" | "investigate";
-  confidence: number; reasoning: string; recommendation: string; evidence: string[];
-}
-
-const SUPPORTED_ROUTES = [
-  { from: "SOL",   to: "ETH",   label: "SOL → ETH",       sub: "Solana Devnet → Sepolia" },
-  { from: "ETH",   to: "SOL",   label: "ETH → SOL",       sub: "Sepolia → Solana Devnet" },
-  { from: "PYUSD", to: "PYUSD", label: "PYUSD → PYUSD",   sub: "SOL Devnet ↔ ETH Sepolia bridge" },
-  { from: "PYUSD", to: "ETH",   label: "PYUSD → ETH",     sub: "PayPal USD → Ether (Sepolia)" },
-  { from: "ETH",   to: "PYUSD", label: "ETH → PYUSD",     sub: "Ether → PayPal USD (SOL)" },
-  { from: "SOL",   to: "PYUSD", label: "SOL → PYUSD",     sub: "Solana → PayPal USD (ETH)" },
-  { from: "PYUSD", to: "SOL",   label: "PYUSD → SOL",     sub: "PayPal USD → Solana Devnet" },
-];
-
-const CHAIN_TOKENS: Record<string, string> = { SOL: "SOL", ETH: "ETH" };
-
-/** chain = the actual blockchain network identifier (SOL or ETH) */
-interface TokenInfo { symbol: string; name: string; network: string; color: string; letter: string; chain: string; }
-const TOKENS: TokenInfo[] = [
-  { symbol: "SOL",   name: "Solana",              network: "Devnet",  color: "#9945ff", letter: "◎", chain: "SOL" },
-  { symbol: "ETH",   name: "Ethereum",            network: "Sepolia", color: "#627eea", letter: "Ξ",  chain: "ETH" },
-  { symbol: "PYUSD", name: "PayPal USD (SOL)",    network: "Devnet",  color: "#003087", letter: "₱",  chain: "SOL" },
-  { symbol: "PYUSD", name: "PayPal USD (ETH)",    network: "Sepolia", color: "#009cde", letter: "₱",  chain: "ETH" },
-];
-
-interface LiveRateData {
-  prices: { SOL: number; ETH: number; PYUSD: number };
-  rates: Record<string, Record<string, number>>;
-  source: string;
-  fetchedAt: string;
-}
-
-const STRATEGY_CONFIG: Record<string, { label: string; color: string; icon: string; desc: string }> = {
-  aggressive: { label: "AGGRESSIVE", color: "#ef4444", icon: "⚡", desc: "Lowest fee" },
-  instant:    { label: "INSTANT",    color: "#0ea5e9", icon: "🚀", desc: "Fastest" },
-  premium:    { label: "PREMIUM",    color: "#f59e0b", icon: "💎", desc: "Guaranteed SLA" },
-  ai:         { label: "AI AGENT",   color: P,         icon: "🤖", desc: "Claude-powered" },
-  custom:     { label: "CUSTOM",     color: "#f59e0b", icon: "⭐", desc: "Community" },
-  live:       { label: "LIVE TX",    color: M,         icon: "🟢", desc: "Real on-chain" },
-  pyusd:      { label: "PYUSD",      color: "#003087", icon: "₱",  desc: "PayPal USD bridge" },
-};
-
-const STATUS_PIPELINE = [
-  { key: "encrypted", label: "Intent encrypted",  desc: "Sealed on Encrypt FHE devnet",       icon: "🔒" },
-  { key: "bidding",   label: "Solver bidding",     desc: "Blind auction in progress",          icon: "⚔️" },
-  { key: "accepted",  label: "Solver accepted",    desc: "",                                    icon: "🤝" },
-  { key: "executing", label: "Solver executing",   desc: "Ika MPC signing in progress",        icon: "⚡" },
-  { key: "delivered", label: "Token delivered",    desc: "",                                    icon: "📦" },
-];
-
-function chip(txt: string, color: string) {
-  return (
-    <span style={{
-      fontSize: "10px", fontWeight: 700, letterSpacing: "0.4px",
-      background: `${color}1a`, color, border: `1px solid ${color}35`,
-      borderRadius: "999px", padding: "2px 9px",
-    }}>{txt}</span>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const map: Record<string, string> = {
-    pending: "#64748b", encrypted: P, bidding: "#f59e0b",
-    accepted: "#0ea5e9", executing: "#f59e0b", delivered: M,
-    settled: M, failed: "#ef4444", refunded: "#94a3b8",
-  };
-  const c = map[status] ?? "#64748b";
-  const pulse = ["bidding","executing","accepted"].includes(status);
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-      <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: c,
-        boxShadow: `0 0 6px ${c}`, display: "inline-block",
-        animation: pulse ? "pulse 1.5s infinite" : "none" }} />
-      <span style={{ color: c, fontWeight: 600, fontSize: "13px", textTransform: "capitalize" }}>{status}</span>
-    </span>
-  );
-}
-
-function StepIndicator({ current }: { current: string }) {
-  const steps = [
-    { key: "connect", label: "Connect", short: "1" },
-    { key: "dwallet", label: "dWallet", short: "2" },
-  ];
-  const idx = steps.findIndex(s => s.key === current);
-  return (
-    <div style={{ display: "flex", alignItems: "center", marginBottom: "32px" }}>
-      {steps.map((s, i) => {
-        const done   = i < idx;
-        const active = i === idx;
-        return (
-          <React.Fragment key={s.key}>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}>
-              <div style={{
-                width: "34px", height: "34px", borderRadius: "50%",
-                background: done ? `linear-gradient(135deg,${P},${M})` : active ? `${P}22` : "rgba(255,255,255,0.06)",
-                border: active ? `2px solid ${P}` : done ? "none" : "1.5px solid rgba(255,255,255,0.12)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                transition: "all 0.35s",
-                boxShadow: active ? `0 0 0 4px ${P}20` : "none",
-              }}>
-                {done ? (
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <path d="M2.5 7l3 3 6-6" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                ) : (
-                  <span style={{ fontSize: "12px", fontWeight: 700,
-                    color: active ? P : "#475569" }}>{s.short}</span>
-                )}
-              </div>
-              <span className="step-label" style={{
-                fontSize: "10px", fontWeight: 600, letterSpacing: "0.3px",
-                color: active ? "#e2e8f0" : done ? "#64748b" : "#334155",
-              }}>{s.label}</span>
-            </div>
-            {i < steps.length - 1 && (
-              <div style={{ flex: 1, height: "2px", margin: "0 4px",
-                background: i < idx ? `linear-gradient(90deg,${P},${M})` : "rgba(255,255,255,0.07)",
-                transition: "background 0.4s", position: "relative", top: "-9px",
-              }} />
-            )}
-          </React.Fragment>
-        );
-      })}
-    </div>
-  );
-}
+import { P, M, BG, API, STATUS_COLORS, STRATEGY_CONFIG, STATUS_PIPELINE, TOKENS, CHAIN_TOKENS } from "@/lib/constants";
+import type { TokenInfo, SolverBid, IntentResult, SolverStrategy, LiveRateData, RegisteredSolver, DisputeResult } from "@/lib/types";
+import { card, inp, primaryBtn, addrFmt, GL_KEYFRAMES, chip } from "@/lib/styles";
+import { Chip } from "@/components/Chip";
+import { StatusBadge } from "@/components/StatusBadge";
+import { StepIndicator } from "@/components/StepIndicator";
 
 function SolverRace({ bids, winner }: { bids: SolverBid[]; winner: string | null }) {
   const [mounted, setMounted] = useState(false);
@@ -560,6 +393,7 @@ export default function App() {
   const [vaultDepositAmt, setVaultDepositAmt] = useState("");
   const [vaultWithdrawAmt, setVaultWithdrawAmt] = useState("");
   const [vaultToken, setVaultToken] = useState<"SOL" | "ETH">("SOL");
+  const [vaultWithdrawResult, setVaultWithdrawResult] = useState<string | null>(null);
   type VaultWithdrawData = {
     stealthAddress:  string;
     monitorKey:      string;

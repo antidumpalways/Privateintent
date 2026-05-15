@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "preinstall": "node -e \"try { require('fs').unlinkSync('package-lock.json') } catch(e){} try { require('fs').unlinkSync('yarn.lock') } catch(e){} if (!process.env.npm_config_user_agent?.startsWith('pnpm')) { console.error('Use pnpm instead'); process.exit(1) }\"",
+"preinstall": "node -e \"try { require('fs').unlinkSync('package-lock.json') } catch(e){} try { require('fs').unlinkSync('yarn.lock') } catch(e){} if (!process.env.npm_config_user_agent?.startsWith('pnpm')) { console.error('Use pnpm instead'); process.exit(1) }\"",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
@@ -22,7 +22,8 @@
       "puppeteer",
       "bufferutil",
       "utf-8-validate",
-      "protobufjs"
+      "protobufjs",
+      "keccak"
     ]
   },
   "dependencies": {

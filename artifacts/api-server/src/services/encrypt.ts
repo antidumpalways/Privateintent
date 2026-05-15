@@ -66,6 +66,8 @@ export interface EncryptedPayload {
 
 export interface FHEAuditResult {
   encrypted: string;
+  encryptedPayload?: string;
+  encryptMode?: string;
   ref: string;
   onChainId?: string;
   network: string;
@@ -151,7 +153,7 @@ export async function getNetworkEncryptionPublicKey(): Promise<{ key: Buffer; so
     ]);
 
     // Pick the first active one (active byte == 1)
-    for (const acc of accounts as Array<{ pubkey: PublicKey; account: { data: Buffer } }>) {
+    for (const acc of (accounts as unknown) as Array<{ pubkey: PublicKey; account: { data: Buffer } }>) {
       const data = acc.account.data;
       // Skip 8-byte discriminator, then 32 pubkey, 1 active
       if (data.length >= 41) {
@@ -173,7 +175,7 @@ export async function getNetworkEncryptionPublicKey(): Promise<{ key: Buffer; so
 
     // No active key found on-chain — try ANY key without size filter
     const anyAccounts = await conn.getProgramAccounts(programPubkey);
-    for (const acc of anyAccounts as Array<{ pubkey: PublicKey; account: { data: Buffer } }>) {
+    for (const acc of (anyAccounts as unknown) as Array<{ pubkey: PublicKey; account: { data: Buffer } }>) {
       const data = acc.account.data;
       // Skip 8-byte discriminator if present, then 32 pubkey + 1 active + 1 bump
       if (data.length === 42 || data.length === 34) {

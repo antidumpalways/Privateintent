@@ -7,6 +7,32 @@ Powered by Ika MPC, Encrypt FHE, and on-chain escrow on Solana + Ethereum
 
 ---
 
+## 📑 Daftar Isi
+
+- [The Problem](#the-problem)
+- [The Solution — Private Intent](#the-solution--private-intent)
+- [🚀 Deployed Smart Contracts](#-deployed-smart-contracts)
+  - [Ethereum Sepolia (Solidity)](#ethereum-sepolia---privateintentescrowsol)
+  - [Solana Devnet (Anchor Native)](#solana-devnet---native-anchor-program-prism_dwallet_escrow)
+  - [Escrow Flow Comparison](#escrow-flow-comparison)
+- [Why Ika and Encrypt Are Not Decorative](#why-ika-and-encrypt-are-not-decorative)
+- [Monorepo Structure](#monorepo-structure)
+- [Database Tables](#database-tables)
+- [Workflow Diagrams](#workflow-diagrams)
+- [Features](#features)
+- [🧠 Architecture](#-architecture)
+- [🔧 Backend Services](#-backend-services)
+- [External Networks](#external-networks)
+- [Complete API Reference](#complete-api-reference)
+- [Environment Variables](#environment-variables)
+- [Build & Run Locally](#build--run-locally)
+- [Escrow Contract Deployment](#escrow-contract-deployment)
+- [Verifying On-Chain (for Judges)](#verifying-on-chain-for-judges)
+- [Live Endpoints](#live-endpoints)
+- [Tech Stack](#tech-stack)
+
+---
+
 ## The Problem
 
 Cross-chain DeFi today is broken in three fundamental ways:
@@ -75,9 +101,9 @@ User types intent
 
 | Item | Detail |
 |------|--------|
-| **Contract Address** | [`0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751`](https://sepolia.etherscan.io/address/0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751) |
-| **Deploy TX** | `0xc3c11d664dc1d90b6321acbbc5d590641bd8690dd76c090c1417b77d599f79f7` |
-| **Block Number** | 10846917 |
+| **Contract Address** | [`0x47D8A17167082B68Bf7f2004754BBC3A43b5Bd9A`](https://sepolia.etherscan.io/address/0x47D8A17167082B68Bf7f2004754BBC3A43b5Bd9A) |
+| **Deploy TX** | `0x4561f5ce69b9b6b61b528bf0c297139c95d09f131dec15ba795aea9a7a4e6a2e` |
+| **Block Number** | 10853886 |
 | **Deployer / Sentinel** | `0xFe4957467b528e6E4F2712DCD3C2D4BaB2CDb6AA` |
 | **Source** | `artifacts/escrow-contract/contracts/PrivateIntentEscrow.sol` |
 | **Framework** | Hardhat + Solidity |
@@ -86,6 +112,7 @@ User types intent
 **Functions:**
 ```
 createIntent(fromChain, toChain, fromToken, toToken, releaseAfter, proofHash)  payable → intentId
+deposit(intentId, deadline)                                                     payable → add ETH / update deadline
 settleIntent(intentId, solverAddress, deliveryTxHash)                           → releases ETH to solver
 refundIntent(intentId)                                                          → returns ETH to user
 disputeIntent(intentId)                                                         → flags for arbitration
@@ -151,7 +178,7 @@ Both are essential. Neither is decorative.
 ```
 artifacts/
   api-server/              Express 5 backend (port 8080)
-  prism-dwallet-web/       React 19 + Vite 7 web dashboard (port 8081)
+  prism-dwallet-web/       React 19 + Vite 7 web dashboard (port 5173)
   escrow-contract/         🔷 Ethereum Sepolia — PrivateIntentEscrow.sol (Solidity)
   sol-escrow/              🔷 Solana Devnet — private_intent_escrow (Rust native Anchor)
   mockup-sandbox/          Mockup sandbox environment
@@ -436,7 +463,7 @@ The core engine implements the full CrossChainOrder lifecycle with **real on-cha
 - Even the server cannot reverse the cipher without the user's viewing key
 
 **On-chain escrow settlement:**
-- **ETH Sepolia:** `settleIntent()` called on `PrivateIntentEscrow` contract at `0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751`
+- **ETH Sepolia:** `settleIntent()` called on `PrivateIntentEscrow` contract at `0x47D8A17167082B68Bf7f2004754BBC3A43b5Bd9A`
 - **Solana Devnet:** `release()` Anchor instruction called via CPI → SOL transferred from PDA to solver
 
 ---
@@ -636,7 +663,7 @@ Returns status for: Ika gRPC (latency probe), Encrypt gRPC, Anthropic Claude, So
 │  │  ┌─────────────────────────────┐    ┌──────────────────────────┐     │
 │  │  │  ETH Sepolia                │    │  Solana Devnet            │     │
 │  │  │  PrivateIntentEscrow.sol    │    │  private_intent_escrow    │     │
-│  │  │  0x8b72116ca689...d751      │    │  GJbT5jcR38...aqmq       │     │
+│  │  │  0x47D8A17167...43b5Bd9A    │    │  GJbT5jcR38...aqmq       │     │
 │  │  │  Solidity (Hardhat)         │    │  Rust (Anchor native)    │     │
 │  │  │                             │    │                           │     │
 │  │  │  createIntent()  payable    │    │  deposit() → PDA lock    │     │
@@ -771,6 +798,13 @@ Copy `.env.example` → `.env` and configure:
 | `SOLANA_DEVNET_PUBKEY` | ⬜ | Sentinel public key (base58) |
 | `MASTER_ENCRYPT_KEY` | ⬜ | FHE master key (64 hex chars) |
 
+**Current deployed values:**
+```
+ETH_ESCROW_CONTRACT_ADDRESS=0x47D8A17167082B68Bf7f2004754BBC3A43b5Bd9A
+SOLANA_ESCROW_PROGRAM_ID=GJbT5jcR38MzkmsCDrVWrjq2Bvg961CUkMnvUq7naqmq
+SENTINEL_ETH_ADDRESS=0xFe4957467b528e6E4F2712DCD3C2D4BaB2CDb6AA
+```
+
 **What needs no API keys:**
 - Ika devnet — public gRPC endpoint, no registration
 - Encrypt devnet — public gRPC endpoint, no registration
@@ -787,33 +821,32 @@ Copy `.env.example` → `.env` and configure:
 |---|---|
 | Node.js | 20+ |
 | pnpm | 9+ |
-| PostgreSQL | 14+ |
-| Rust (for Solana program) | 1.75+ |
-| Solana CLI | 1.18+ |
-| Anchor CLI | 0.30.1 |
+| PostgreSQL | 14+ (optional — API runs without it, agent loop logs warnings) |
+| Git | 2+ |
 
 ### Quick Start
 
 ```bash
-# 1. Clone & install
-git clone <repo-url>
-cd private-intent
+# 1. Install dependencies
 pnpm install
 
-# 2. Set up .env
+# 2. Copy and configure .env
 cp .env.example .env
-# edit .env with your values
+# → Edit .env with your values (see Environment Variables section above)
+# → Minimal required: set DATABASE_URL (even if PG isn't running — server starts anyway)
 
-# 3. Set up database
-createdb -U postgres private_intent
-pnpm --filter @workspace/db run migrate
+# 3. Build API server (esbuild)
+pnpm --filter @workspace/api-server exec -- node build.mjs
+# Output: dist/index.mjs (5.4mb), dist/seed.mjs (2.2mb), ...
 
-# 4. Build & start API server (port 8080)
-pnpm --filter @workspace/api-server run build
-pnpm --filter @workspace/api-server run start
+# 4. Start API server (port 8080)
+pnpm --filter @workspace/api-server exec -- node --enable-source-maps dist/index.mjs
+# Server listening on port 8080
+# LiveSolver auto-registered, Dark Pool seeded with 8 bot orders
 
-# 5. (New terminal) Start web dashboard (port 8081)
-pnpm --filter @workspace/prism-dwallet-web run dev
+# 5. (Separate terminal) Start web dashboard (port 5173)
+pnpm --filter @workspace/prism-dwallet-web exec -- vite --config vite.config.ts --host 0.0.0.0
+# → http://localhost:5173
 ```
 
 ### Verify
@@ -829,6 +862,12 @@ curl http://localhost:8080/api/rates
 # → {prices: {SOL: ..., ETH: ..., PYUSD: 1.00}, ...}
 ```
 
+### ⚠️ Known Issues
+
+- **PostgreSQL not connected**: Server runs fine without it. Only the agent loop (30s cron) logs `ECONNREFUSED`. Install PostgreSQL 14+ and create database `privateintent` to fix.
+- **Typecheck (`pnpm run build`)**: Full monorepo typecheck fails due to a pre-existing TS error in `@ika.xyz/pre-alpha-solana-client`. Individual projects pass: `pnpm --filter @workspace/api-server run typecheck` passes.
+- **Docker not running**: If Docker Desktop isn't active, you can't spin up PostgreSQL via container. Install PostgreSQL natively instead.
+
 ---
 
 ## Escrow Contract Deployment
@@ -836,14 +875,20 @@ curl http://localhost:8080/api/rates
 ### ETH Sepolia (Solidity)
 
 ```bash
-cd artifacts/escrow-contract
-npm install
-npx hardhat compile
-npx hardhat run scripts/deploy-simple.js --network sepolia
+# 1. Compile
+node artifacts/escrow-contract/scripts/compile.js
+# → Output: artifacts/escrow-contract/build/PrivateIntentEscrow.{abi.json,bin,json}
+
+# 2. Set env vars in root .env
+# DEPLOYER_PRIVATE_KEY=0x14f5247a148cfe65917e24248b61c3b6fe907ea6f8fa383b511dc2fd095b12ef
+# SENTINEL_ETH_ADDRESS=0xFe4957467b528e6E4F2712DCD3C2D4BaB2CDb6AA
+
+# 3. Deploy
+node artifacts/escrow-contract/scripts/deploy-simple.js
 ```
 
-Contract: `0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751`  
-[View on Sepolia Etherscan](https://sepolia.etherscan.io/address/0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751)
+**Current contract:** `0x47D8A17167082B68Bf7f2004754BBC3A43b5Bd9A`  
+[View on Sepolia Etherscan](https://sepolia.etherscan.io/address/0x47D8A17167082B68Bf7f2004754BBC3A43b5Bd9A)
 
 ### Solana Devnet (Rust Anchor Native)
 
@@ -877,7 +922,7 @@ anchor deploy --provider.cluster devnet
 
 | Claim | How to verify |
 |---|---|
-| **ETH escrow contract is real** | View on [Sepolia Etherscan](https://sepolia.etherscan.io/address/0x8b72116ca68982F3e8c40BD3B482F1d45ac8d751) — verified bytecode, deploy tx, sentinel address |
+| **ETH escrow contract is real** | View on [Sepolia Etherscan](https://sepolia.etherscan.io/address/0x47D8A17167082B68Bf7f2004754BBC3A43b5Bd9A) — verified bytecode, deploy tx `0x4561f5ce...`, sentinel `0xFe495746...` |
 | **Solana Anchor program is real** | `solana program show GJbT5jcR38MzkmsCDrVWrjq2Bvg961CUkMnvUq7naqmq --url devnet` → shows executable data, authority, slot |
 | **Ika MPC DKG is real** | `POST /native/wallet/create` → inspect `mode: "devnet"` + `attestationHex` in response |
 | **Encrypt FHE seal is real** | `POST /api/intent/submit` → `crossChainOrder.encryptedOrderData` is an on-chain ciphertext commitment |
@@ -894,7 +939,7 @@ anchor deploy --provider.cluster devnet
 | Resource | URL |
 |---|---|
 | API | `http://localhost:8080` |
-| Web dashboard | `http://localhost:8081` |
+| Web dashboard | `http://localhost:5173` |
 | Integration health | `http://localhost:8080/api/healthz/integrations` |
 | Live rates | `http://localhost:8080/api/rates` |
 

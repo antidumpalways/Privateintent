@@ -19,7 +19,7 @@ pragma solidity ^0.8.28;
  */
 contract PrivateIntentEscrow {
     // ─── Types ──────────────────────────────────────────────────────────────
-    
+     
     enum IntentStatus { Pending, Active, Delivered, Settled, Refunded, Disputed }
 
     struct Intent {
@@ -44,7 +44,7 @@ contract PrivateIntentEscrow {
     address public sentinel;        // Live solver / escrow agent
     uint256 public nextIntentId;
     mapping(uint256 => Intent) public intents;
-    
+     
     event IntentCreated(
         uint256 indexed intentId,
         address indexed user,
@@ -147,7 +147,7 @@ contract PrivateIntentEscrow {
         string calldata deliveryTxHash
     ) external onlySentinel intentExists(intentId) intentStatus(intentId, IntentStatus.Active) {
         Intent storage intent = intents[intentId];
-        
+         
         require(solverAddress != address(0), "Invalid solver address");
         require(bytes(deliveryTxHash).length > 0, "Delivery tx hash required");
         require(intent.releaseAfter == 0 || block.timestamp >= intent.releaseAfter, "Timelock not expired");
@@ -213,6 +213,25 @@ contract PrivateIntentEscrow {
         address old = sentinel;
         sentinel = newSentinel;
         emit SentinelUpdated(old, newSentinel);
+    }
+
+    /**
+     * @notice Deposit more ETH into an existing intent and/or update its deadline.
+     * @param intentId The intent ID
+     * @param deadline Unix timestamp for the new releaseAfter (0 to keep unchanged)
+     */
+    function deposit(uint256 intentId, uint256 deadline) external payable {
+        Intent storage intent = intents[intentId];
+        require(intent.id == intentId, "Intent does not exist");
+        require(intent.status == IntentStatus.Active, "Intent not active for deposit");
+        if (msg.value > 0) {
+            intent.amount += msg.value;
+        }
+        if (deadline > 0) {
+            require(deadline > block.timestamp, "deadline must be in future");
+            require(deadline < block.timestamp + 30 days, "deadline too far");
+            intent.releaseAfter = deadline;
+        }
     }
 
     // ─── View ───────────────────────────────────────────────────────────────

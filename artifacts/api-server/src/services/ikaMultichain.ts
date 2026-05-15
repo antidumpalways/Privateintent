@@ -168,7 +168,7 @@ export type IkaCurve = "secp256k1" | "secp256r1" | "curve25519" | "ristretto";
 export type IkaSigAlgo = "ECDSASecp256k1" | "ECDSASecp256r1" | "Taproot" | "EdDSA" | "SchnorrkelSubstrate";
 export type IkaSigScheme = "EcdsaKeccak256" | "EcdsaDoubleSha256" | "TaprootSha256" | "EddsaSha512" | "SchnorrkelMerlin";
 
-function curveBcs(curve: IkaCurve): Record<string, boolean> {
+function curveBcs(curve: IkaCurve): any {
   const map: Record<IkaCurve, string> = {
     secp256k1: "Secp256k1",
     secp256r1: "Secp256r1",
@@ -178,7 +178,7 @@ function curveBcs(curve: IkaCurve): Record<string, boolean> {
   return { [map[curve]]: true };
 }
 
-function sigAlgoBcs(algo: IkaSigAlgo): Record<string, boolean> {
+function sigAlgoBcs(algo: IkaSigAlgo): any {
   return { [algo]: true };
 }
 

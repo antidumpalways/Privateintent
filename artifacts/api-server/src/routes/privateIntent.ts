@@ -282,8 +282,8 @@ router.post("/intent/submit", async (req, res) => {
         walletAddress: phantomPubkey,
       });
       encryptedIntentId = encrypted.onChainId ?? encryptedIntentId;
-      encryptedIntentHash = encrypted.encryptedPayload?.slice(0, 64) ?? encryptedIntentHash;
-      encryptMode = encrypted.encryptMode ?? "devnet";
+      encryptedIntentHash = (encrypted as any).encryptedPayload?.slice(0, 64) ?? encryptedIntentHash;
+      encryptMode = (encrypted as any).encryptMode ?? "devnet";
     } catch (e) {
       console.warn("[intent/submit] FHE encrypt warn:", (e as Error).message);
     }
