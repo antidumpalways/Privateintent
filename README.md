@@ -933,6 +933,45 @@ anchor deploy --provider.cluster devnet
 
 ---
 
+## ✅ Live Ika MPC DKG — Real-time Verification
+
+On **May 16, 2026**, the Ika MPC DKG was successfully executed live via `POST /api/dwallet/create`:
+
+```
+# Backend log output:
+[IkaMultichain] DKG OK curve=curve25519 attempt=1/3 pubkey=1cdb6ee144330da2…
+[IkaMultichain] DKG OK curve=secp256k1 attempt=1/3 pubkey=03e89815d728a658…
+[dWallet] Created — ETH=0xc73fD0cC… BTC=tb1qd6zyu9dq… SOL=2weV2qfArb4w…
+```
+
+### Result:
+```json
+{
+  "mode": "devnet",                     // ← Real MPC, NOT simulation!
+  "dwallets": {
+    "secp256k1": {
+      "mode": "devnet",
+      "ikaNetwork": "pre-alpha-dev-1.ika.ika-network.net:443",
+      "sigSchemes": ["EcdsaKeccak256 → Ethereum", "EcdsaDoubleSha256 → Bitcoin"]
+    },
+    "curve25519": {
+      "mode": "devnet",
+      "sigSchemes": ["EddsaSha512 → Solana"]
+    }
+  },
+  "addresses": {
+    "eth": "0xc73fD0cC60B6dE90F30fD6AE7080110D4b82dE48",
+    "btc": "tb1qd6zyu9dqc754wpydpkc5n4vjwq28fgeutkqafc",
+    "sol": "2weV2qfArb4wLXdWyykW6DfYfrtRGXq3F7MjbFmTBTdT"
+  },
+  "bridgeless": true
+}
+```
+
+One DKG session → **three blockchain addresses** (ETH + BTC + SOL) simultaneously, using real Ika MPC threshold nodes. No bridge, no seed phrase, no single point of failure.
+
+---
+
 ## Live Endpoints
 
 | Resource | URL |
