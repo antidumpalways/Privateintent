@@ -823,7 +823,8 @@ SENTINEL_ETH_ADDRESS=0xFe4957467b528e6E4F2712DCD3C2D4BaB2CDb6AA
 |---|---|
 | Node.js | 20+ |
 | pnpm | 9+ |
-| PostgreSQL | 17 (installed at `C:\Program Files\PostgreSQL\17`, running on port 5432) |
+| PostgreSQL | 17+ (running on port 5432) |
+| Docker | Optional — for containerized Postgres (see `LOCAL_SETUP.md`) |
 | Git | 2+ |
 
 ### Quick Start
@@ -837,19 +838,35 @@ pnpm install
 # 2. Copy and configure .env
 cp .env.example .env
 # → Edit .env with your values (see Environment Variables section above)
-# → Minimal required: set DATABASE_URL (even if PG isn't running — server starts anyway)
+# → Minimal required: set DATABASE_URL for your PostgreSQL instance
 
 # 3. Build API server (esbuild)
 pnpm --filter @workspace/api-server exec -- node build.mjs
-# Output: dist/index.mjs (5.4mb), dist/seed.mjs (2.2mb), ...
+# Output: dist/index.mjs (5.5mb), dist/seed.mjs (2.2mb), ...
 
-# 4. Start API server (port 8080)
-pnpm --filter @workspace/api-server exec -- node --enable-source-maps dist/index.mjs
+# 4. Push database schema
+node push-schema.mjs
+# (Uses .env DATABASE_URL; creates tables: intents, native_wallets, vault, etc.)
+
+# 5. Start API server (port 8080)
+# The server loads environment variables from .env via dotenv/config.
+# On Windows (cmd):
+pnpm --filter @workspace/api-server exec -- node --enable-source-maps -r dotenv/config dist/index.mjs dotenv_config_path=../../.env
+
+# On Linux/Mac:
+# cd artifacts/api-server && DATABASE_URL=... node --enable-source-maps -r dotenv/config dist/index.mjs
+
 # Server listening on port 8080
 # LiveSolver auto-registered, Dark Pool seeded with 8 bot orders
 
-# 5. (Separate terminal) Start web dashboard (port 5173)
-pnpm --filter @workspace/prism-dwallet-web exec -- vite --config vite.config.ts --host 0.0.0.0
+# 6. (Separate terminal) Start web dashboard (port 5173)
+# IMPORTANT: PORT env variable is required by vite.config.ts
+# On Windows PowerShell:
+$env:PORT='5173'; pnpm --filter @workspace/prism-dwallet-web exec -- vite --config vite.config.ts --host 0.0.0.0
+
+# On Linux/Mac:
+# PORT=5173 pnpm --filter @workspace/prism-dwallet-web exec -- vite --config vite.config.ts --host 0.0.0.0
+
 # → http://localhost:5173
 ```
 
