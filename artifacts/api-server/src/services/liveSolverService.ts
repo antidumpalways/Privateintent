@@ -96,8 +96,33 @@ function getEthWallet(): any {
   return generated;
 }
 
+// Live Solver SOL keypair — reads from SOLVER_RECEIVE_SECRET_KEY env var.
+// This wallet holds SOL inventory and sends SOL to users when they swap
+// any chain → SOL. Fund it at https://faucet.solana.com
+let _solKeypair: Keypair | null = null;
+
 function getSolKeypair(): Keypair {
-  return getSentinelKeypair();
+  if (_solKeypair) return _solKeypair;
+
+  // 1. Prefer env var — persists across restarts
+  const envKey = process.env.SOLVER_RECEIVE_SECRET_KEY;
+  if (envKey) {
+    try {
+      const arr = JSON.parse(envKey) as number[];
+      if (Array.isArray(arr) && arr.length === 64) {
+        _solKeypair = Keypair.fromSecretKey(new Uint8Array(arr));
+        process.stdout.write(`[LiveSolver] SOL solver wallet from env: ${_solKeypair.publicKey.toBase58()}\n`);
+        return _solKeypair;
+      }
+    } catch { /* fall through */ }
+  }
+
+  // 2. Fallback: generate ephemeral (will need funding)
+  _solKeypair = Keypair.generate();
+  process.stdout.write(`[LiveSolver] WARNING: No SOLVER_RECEIVE_SECRET_KEY in env. Generated ephemeral SOL solver wallet: ${_solKeypair.publicKey.toBase58()}\n`);
+  process.stdout.write(`[LiveSolver] Fund SOL solver at https://faucet.solana.com (paste: ${_solKeypair.publicKey.toBase58()})\n`);
+  process.stdout.write(`[LiveSolver] Set SOLVER_RECEIVE_SECRET_KEY in .env to persist across restarts\n`);
+  return _solKeypair;
 }
 
 function getBtcAddress(): string {

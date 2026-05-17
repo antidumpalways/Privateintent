@@ -109,7 +109,7 @@ User types intent
 | **Framework** | Hardhat + Solidity |
 | **ABI** | `artifacts/escrow-contract/build/PrivateIntentEscrow.abi.json` |
 | **ETH Solver Wallet** | `0xFe4957467b528e6E4F2712DCD3C2D4BaB2CDb6AA` (operator — receives escrow release + sends delivery) |
-| **SOL Solver Wallet** | `9xPwjf2dmafdxhnyZeAaVQpYWxH4Kn1N9XeeLQpnkttu` (sentinel — PDA operator + SOL delivery) |
+| **SOL Solver Wallet** | `eczh5DDf766zSVzDj3ifdxYCqWPUhZLmTgyX6dDXNKJ` (solver receive — holds SOL inventory, sends SOL to users on delivery, receives SOL from escrow settlement) |
 
 **Functions:**
 ```
@@ -796,6 +796,8 @@ Copy `.env.example` → `.env` and configure:
 | `SOLANA_ESCROW_PROGRAM_ID` | ✅ | Solana Anchor native program ID |
 | `ETHEREUM_RPC_URL` | ✅ | Sepolia RPC endpoint |
 | `ETH_SOLVER_PRIVATE_KEY` | ⬜ | Solver ETH wallet PK (for real testnet delivery) |
+| `SOLVER_RECEIVE_SECRET_KEY` | ⬜ | Solver SOL wallet secret key (JSON array of 64 bytes) — holds SOL inventory for delivery, receives SOL from escrow settlement |
+| `SOLVER_RECEIVE_PUBLIC_ADDRESS` | ⬜ | Solver SOL wallet public address (base58) — for funding via faucet |
 | `SOLANA_SECRET_KEY_ARRAY` | ⬜ | Persist sentinel keypair across restarts |
 | `SOLANA_DEVNET_PUBKEY` | ⬜ | Sentinel public key (base58) |
 | `MASTER_ENCRYPT_KEY` | ⬜ | FHE master key (64 hex chars) |
