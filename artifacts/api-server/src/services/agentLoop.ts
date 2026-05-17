@@ -90,17 +90,17 @@ async function runAgentForJob(job: {
       const direction = event.actual > event.target ? "▼ reduce" : "▲ increase";
       const reason = `Agent rebalanced ${event.symbol}: ${direction} by ${event.drift.toFixed(1)}% (actual ${event.actual.toFixed(1)}% → target ${event.target.toFixed(1)}%)`;
 
-      // devnet simulation: no real tx hash (Covalent doesn't index devnet)
-      // hash is deterministic from wallet+symbol+timestamp for audit trail integrity
-      const simTxHash = `devnet_sim_rebalance:0x${randomBytes(16).toString("hex")}`;
+      // Devnet portfolio — no real blockchain tx (Covalent doesn't index devnet).
+      // auditRef is a unique audit trail key for this Ika co-sign event.
+      const auditRef = `devnet_rebalance:${event.symbol}:0x${randomBytes(16).toString("hex")}`;
       const token = tokens.find((t) => t.symbol === event.symbol);
       const tradeUsd = token ? Math.abs((event.drift / 100) * totalUsd) : 0;
 
-      const coSigResult = await requestCoSignature(walletAddress, simTxHash, true);
+      const coSigResult = await requestCoSignature(walletAddress, auditRef, true);
 
       await db.insert(auditLogsTable).values({
         walletAddress,
-        txHash: simTxHash,
+        txHash: auditRef,
         txType: "rebalance",
         contractAddress: token?.contractAddress ?? "0x0000000000000000000000000000000000000000",
         amountUsd: Math.round(tradeUsd * 100) / 100,
@@ -120,14 +120,14 @@ async function runAgentForJob(job: {
     const { symbol, pct } = concentrationHit;
     const reason = `BLOCKED: Suspicious concentration — ${symbol} at ${pct.toFixed(1)}% of portfolio (threshold ${SUSPICIOUS_CONCENTRATION_PCT}%). Ika co-signature denied.`;
 
-    const simTxHash = `devnet_sim_block:0x${randomBytes(16).toString("hex")}`;
+    const auditRef = `devnet_blocked:${symbol}:0x${randomBytes(16).toString("hex")}`;
     const token = tokens.find((t) => t.symbol === symbol);
 
-    const coSigResult = await requestCoSignature(walletAddress, simTxHash, false);
+    const coSigResult = await requestCoSignature(walletAddress, auditRef, false);
 
     await db.insert(auditLogsTable).values({
       walletAddress,
-      txHash: simTxHash,
+      txHash: auditRef,
       txType: "swap",
       contractAddress: token?.contractAddress ?? "0x0000000000000000000000000000000000000000",
       amountUsd: Math.round((pct / 100) * totalUsd * 100) / 100,

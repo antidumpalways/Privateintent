@@ -3,17 +3,9 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
-    "types": ["node"],
-    "noImplicitReturns": false,
-    "noImplicitAny": false,
-    "skipLibCheck": true,
-    "strictNullChecks": false,
-    "strictFunctionTypes": false,
-    "strictBindCallApply": false,
-    "strictPropertyInitialization": false
+    "types": ["node"]
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist", "../../node_modules", "../../node_modules/.pnpm/@ika.xyz*"],
   "references": [
     {
       "path": "../../lib/db"

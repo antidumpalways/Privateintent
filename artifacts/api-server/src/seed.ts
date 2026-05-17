@@ -1,5 +1,5 @@
 /**
- * Seed script — inserts demo data for SentinelWallet hackathon demo
+ * Seed script — inserts demo data for Private Intent hackathon demo
  * Run: pnpm --filter @workspace/api-server run seed
  */
 import { db } from "@workspace/db";

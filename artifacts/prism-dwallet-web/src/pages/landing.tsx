@@ -84,7 +84,7 @@ const STEPS = [
   {
     icon: "🔒",
     title: "Submit Private Intent",
-    desc: "Describe your swap in plain text. Encrypt FHE seals it on-chain instantly. MEV bots see only ciphertext.",
+    desc: "Describe your swap in plain language. AI parses your intent, FHE seals it on-chain before any solver sees it. MEV bots see only ciphertext.",
   },
   {
     icon: "⚡",
@@ -200,14 +200,14 @@ export default function Landing() {
           {/* H1 */}
           <h1 className="hero-h1" style={{ fontSize: "clamp(36px, 6vw, 64px)", fontWeight: 900,
             lineHeight: 1.08, letterSpacing: "-2px", margin: "0 0 28px" }}>
-            <span style={{ color: "#f1f5f9" }}>Swap privately.</span>
+            <span style={{ color: "#f1f5f9" }}>Transact privately.</span>
             <br />
             <span style={{ color: P }}>No bridges. No leaks.</span>
           </h1>
 
-          <p style={{ fontSize: "17px", color: "#64748b", lineHeight: 1.7, maxWidth: "480px",
+          <p style={{ fontSize: "17px", color: "#64748b", lineHeight: 1.7, maxWidth: "520px",
             margin: "0 auto 48px", fontWeight: 400 }}>
-            Any chain. No bridge. No one sees your intent.
+            Seal your intent with FHE. Solvers bid blindly. Assets arrive natively.
           </p>
 
           {/* CTA */}
@@ -237,10 +237,10 @@ export default function Landing() {
             borderRadius: "14px", overflow: "hidden",
           }}>
             {[
+              { val: "3", label: "Chains" },
+              { val: "5", label: "Solvers" },
               { val: "0", label: "Bridges" },
-              { val: "FHE", label: "Privacy layer" },
-              { val: "MPC", label: "Native signing" },
-              { val: "Any", label: "Chain" },
+              { val: "FHE Sealed", label: "Privacy" },
             ].map((s, i, arr) => (
               <div key={s.label} style={{
                 padding: "18px 28px", textAlign: "center",
@@ -251,6 +251,49 @@ export default function Landing() {
               </div>
             ))}
           </div>
+        </div>
+      </section>
+
+      {/* Inside the App */}
+      <section style={{ padding: "0 20px 80px", maxWidth: "1040px", margin: "0 auto",
+        position: "relative", zIndex: 1 }}>
+        <div style={{ textAlign: "center", marginBottom: "40px" }}>
+          <div style={{ fontSize: "11px", fontWeight: 700, color: "#475569",
+            letterSpacing: "2px", textTransform: "uppercase", marginBottom: "12px" }}>INSIDE THE APP</div>
+          <h2 style={{ fontSize: "30px", fontWeight: 800, letterSpacing: "-0.8px",
+            color: "#f1f5f9", margin: 0 }}>What you can do from day one.</h2>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "14px" }}>
+          {[
+            {
+              icon: "🔒",
+              title: "Private Swap",
+              desc: "Swap tokens across chains without revealing your amount, destination, or identity. AI understands plain-language requests — just type what you want to do.",
+            },
+            {
+              icon: "👻",
+              title: "Private Drop",
+              desc: "Send tokens to any address privately. The recipient receives native assets; no one watching the mempool can link sender to recipient.",
+            },
+            {
+              icon: "🏦",
+              title: "Shielded Vault",
+              desc: "Hold cross-chain assets under one encrypted keypair. Your balances are shielded by FHE — visible only to you, never to a third-party custodian.",
+            },
+          ].map((card) => (
+            <div key={card.title} className="feat-card" style={{
+              background: "rgba(255,255,255,0.025)",
+              border: "1px solid rgba(255,255,255,0.07)",
+              borderRadius: "16px", padding: "28px 24px",
+            }}>
+              <div style={{ fontSize: "28px", marginBottom: "14px" }}>{card.icon}</div>
+              <div style={{ fontWeight: 700, fontSize: "15px", color: "#f1f5f9",
+                marginBottom: "10px" }}>{card.title}</div>
+              <p style={{ fontSize: "13px", color: "#475569", lineHeight: 1.75, margin: 0 }}>
+                {card.desc}
+              </p>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -402,6 +445,19 @@ export default function Landing() {
         }}>
           {connecting ? "Connecting..." : "Launch Private Intent →"}
         </button>
+        <div style={{ marginTop: "24px", display: "inline-flex", flexDirection: "column",
+          gap: "8px", textAlign: "left" }}>
+          {[
+            "Connect Phantom in one click — no new seed phrase",
+            "Create your Ika dWallet in seconds",
+            "Submit your first private swap immediately",
+          ].map((bullet) => (
+            <div key={bullet} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ color: M, fontSize: "14px", fontWeight: 700 }}>✓</span>
+              <span style={{ fontSize: "13px", color: "#475569" }}>{bullet}</span>
+            </div>
+          ))}
+        </div>
       </section>
 
       {/* Footer */}
@@ -415,7 +471,7 @@ export default function Landing() {
           <span style={{ fontWeight: 600, fontSize: "13px", color: "#334155" }}>Private Intent</span>
         </div>
         <div style={{ fontSize: "12px", color: "#1e293b" }}>
-          Colosseum Frontier Hackathon 2025 · Ika + Encrypt Track · Solana Devnet
+          Colosseum Frontier Hackathon 2026 · Ika + Encrypt Track · Solana Devnet
         </div>
       </footer>
     </div>

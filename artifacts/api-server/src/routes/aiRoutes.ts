@@ -29,6 +29,7 @@ import {
   getLiveSolverBalances,
   getLiveSolverAddresses,
   requestSolAirdrop,
+  getLiveSolverCapacity,
 } from "../services/liveSolverService.js";
 
 const router = Router();
@@ -42,10 +43,10 @@ router.post("/intent/parse", async (req, res) => {
       return res.status(400).json({ error: "text required (min 3 chars)" });
     }
     const result = await parseIntentFromNL(text.trim());
-    res.json({ parsed: result, source: "claude-sonnet-4-6" });
+    return res.json({ parsed: result, source: "claude-sonnet-4-6" });
   } catch (err) {
     console.error("[ai/parse]", err);
-    res.status(500).json({ error: (err as Error).message });
+    return res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -63,10 +64,10 @@ router.post("/intent/optimize", async (req, res) => {
       return res.status(400).json({ error: "fromChain, toChain, amount required" });
     }
     const result = await optimizeRoute({ fromChain, toChain, amount, currentBids: bids });
-    res.json({ optimization: result, source: "claude-sonnet-4-6" });
+    return res.json({ optimization: result, source: "claude-sonnet-4-6" });
   } catch (err) {
     console.error("[ai/optimize]", err);
-    res.status(500).json({ error: (err as Error).message });
+    return res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -104,7 +105,7 @@ router.post("/intent/dispute", async (req, res) => {
         .where(eq(intentsTable.id, intentId));
     }
 
-    res.json({
+    return res.json({
       intentId,
       verdict,
       currentStatus: row.status,
@@ -113,7 +114,7 @@ router.post("/intent/dispute", async (req, res) => {
     });
   } catch (err) {
     console.error("[ai/dispute]", err);
-    res.status(500).json({ error: (err as Error).message });
+    return res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -158,7 +159,7 @@ router.post("/solver/register", (req, res) => {
       webhookUrl, strategy,
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       solver,
       message: `Solver "${solver.name}" registered. It will now participate in all matching intent bids automatically.`,
@@ -171,7 +172,7 @@ router.post("/solver/register", (req, res) => {
     });
   } catch (err) {
     console.error("[solver/register]", err);
-    res.status(500).json({ error: (err as Error).message });
+    return res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -253,7 +254,7 @@ router.post("/solver/bid/:intentId", async (req, res) => {
 
     solver.totalBids++;
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       intentId,
       bid: newBid,
@@ -264,7 +265,7 @@ router.post("/solver/bid/:intentId", async (req, res) => {
     });
   } catch (err) {
     console.error("[solver/bid]", err);
-    res.status(500).json({ error: (err as Error).message });
+    return res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -277,17 +278,14 @@ router.delete("/solver/:id", (req, res) => {
   const solver = getCustomSolver(id);
   if (!solver) return res.status(404).json({ error: "Solver not found" });
   deregisterSolver(id);
-  res.json({ success: true, message: `Solver "${solver.name}" deregistered` });
+  return res.json({ success: true, message: `Solver "${solver.name}" deregistered` });
 });
 
 // ── GET /api/solver/list ──────────────────────────────────────────────────────
 // List all solvers in the marketplace (built-in + custom)
 router.get("/solver/list", (_req, res) => {
   const builtIn = [
-    { id: "solver-alpha", name: "Alpha Solver", type: "built-in", baseFeePercent: 0.30, supportedFromChains: ["SOL", "ETH"], supportedToChains: ["ETH", "SOL"], description: "High-reliability built-in solver" },
-    { id: "solver-beta", name: "Beta Solver", type: "built-in", baseFeePercent: 0.25, supportedFromChains: ["SOL", "ETH"], supportedToChains: ["ETH", "SOL"], description: "EVM specialist solver" },
-    { id: "solver-gamma", name: "Gamma Solver", type: "built-in", baseFeePercent: 0.50, supportedFromChains: ["SOL", "ETH"], supportedToChains: ["ETH", "SOL"], description: "Wide route coverage solver" },
-    { id: "solver-ai", name: "AI Solver (Claude)", type: "ai-agent", baseFeePercent: "dynamic", supportedFromChains: ["SOL", "ETH"], supportedToChains: ["ETH", "SOL"], description: "Autonomous Claude-powered solver with underbid strategy" },
+    { id: "solver-ai", name: "AI Solver (Claude)", type: "ai-agent", baseFeePercent: "dynamic", supportedFromChains: ["SOL", "ETH"], supportedToChains: ["ETH", "SOL"], description: "Autonomous Claude-powered solver with underbid strategy. Routes to Live Solver for actual on-chain execution." },
   ];
 
   const custom = getAllCustomSolvers().map(s => ({ ...s, type: "custom" }));
@@ -304,6 +302,56 @@ router.get("/solver/list", (_req, res) => {
       deregisterEndpoint: "DELETE /api/solver/:id",
     },
   });
+});
+
+// ── GET /api/solver/health ────────────────────────────────────────────────────
+// Returns real-time solver inventory, deliverable amounts, and swap capacity.
+// Used by the UI to show solver liquidity before a user commits to a swap.
+router.get("/solver/health", async (_req, res) => {
+  try {
+    const cap = await getLiveSolverCapacity();
+
+    const warnings: string[] = [];
+    if (cap.sol.status === "critical") warnings.push("SOL inventory empty — ETH→SOL swaps unavailable");
+    else if (cap.sol.status === "low")  warnings.push(`SOL inventory low (${cap.sol.maxDeliverable.toFixed(4)} SOL available). Top up at https://faucet.solana.com`);
+    if (cap.eth.status === "critical") warnings.push("ETH inventory empty — SOL→ETH swaps unavailable");
+    else if (cap.eth.status === "low")  warnings.push(`ETH inventory low (${cap.eth.maxDeliverable.toFixed(4)} ETH available). Top up via Sepolia faucet`);
+
+    res.json({
+      sol: {
+        address: cap.sol.address,
+        balance: parseFloat(cap.sol.balance.toFixed(6)),
+        maxDeliverable: parseFloat(cap.sol.maxDeliverable.toFixed(6)),
+        status: cap.sol.status,
+        faucet: "https://faucet.solana.com",
+      },
+      eth: {
+        address: cap.eth.address,
+        balance: parseFloat(cap.eth.balance.toFixed(6)),
+        maxDeliverable: parseFloat(cap.eth.maxDeliverable.toFixed(6)),
+        status: cap.eth.status,
+        faucet: "https://sepoliafaucet.com",
+      },
+      swapCapacity: {
+        ethToSol: {
+          available: cap.sol.status !== "critical",
+          maxInputEth: null,
+          maxOutputSol: parseFloat(cap.sol.maxDeliverable.toFixed(6)),
+          status: cap.sol.status,
+        },
+        solToEth: {
+          available: cap.eth.status !== "critical",
+          maxInputSol: null,
+          maxOutputEth: parseFloat(cap.eth.maxDeliverable.toFixed(6)),
+          status: cap.eth.status,
+        },
+      },
+      warnings,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 // ── GET /api/solver/live/status ───────────────────────────────────────────────

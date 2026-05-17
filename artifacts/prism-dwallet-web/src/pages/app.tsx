@@ -1,12 +1,210 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useLocation } from "wouter";
 import { useWallet } from "@/lib/wallet-context";
-import { P, M, BG, API, STATUS_COLORS, STRATEGY_CONFIG, STATUS_PIPELINE, TOKENS, CHAIN_TOKENS } from "@/lib/constants";
-import type { TokenInfo, SolverBid, IntentResult, SolverStrategy, LiveRateData, RegisteredSolver, DisputeResult } from "@/lib/types";
-import { card, inp, primaryBtn, addrFmt, GL_KEYFRAMES, chip } from "@/lib/styles";
-import { Chip } from "@/components/Chip";
-import { StatusBadge } from "@/components/StatusBadge";
-import { StepIndicator } from "@/components/StepIndicator";
+
+const API = import.meta.env.VITE_API_URL ?? "";
+
+const P  = "#7c3aed";
+const M  = "#10b981";
+const BG = "#0a0b14";
+
+type SolverStrategy = "aggressive" | "instant" | "premium" | "ai" | "custom" | "live";
+
+interface SolverBid {
+  solverId: string; solverName: string; solverDescription: string;
+  solverStrategy?: SolverStrategy; fromChain: string; toChain: string;
+  fromToken: string; toToken: string; inputAmount: string; outputAmount: string;
+  feePercent: number; feeAmount: string; estimatedSeconds: number; reputationScore: number;
+  sla?: string; erc7683Compliant?: boolean;
+  chainDetails: { network: string; explorerUrl: string; nativeSign: string };
+  isCustomSolver?: boolean; operatorAddress?: string;
+}
+
+interface CrossChainOrderView {
+  standard?: string;
+  orderDataType?: string;
+  originChainId?: string;
+  destinationChainId?: string;
+  inputToken?: string;
+  inputAmount?: string;
+  outputToken?: string;
+  fillDeadline?: string;
+  privacyNote?: string;
+}
+
+interface IntentResult {
+  intentId: number; status: string; encryptedIntentId: string;
+  encryptedIntentHash: string; encryptMode: string;
+  crossChainOrder?: CrossChainOrderView; viewingKey?: string; standard?: string;
+  bids: SolverBid[]; bestBid: SolverBid; expiresAt: string;
+  releaseAfter?: string | null;
+  aiSolverIncluded?: boolean; customSolverCount?: number; totalSolvers?: number;
+}
+
+interface RegisteredSolver {
+  id: string; name: string; description: string; type: string;
+  baseFeePercent: number | string; supportedFromChains: string[]; supportedToChains: string[];
+  totalBids?: number; wins?: number; operatorAddress?: string;
+}
+
+interface DisputeResult {
+  verdict: "release" | "refund" | "partial" | "investigate";
+  confidence: number; reasoning: string; recommendation: string; evidence: string[];
+}
+
+const SUPPORTED_ROUTES = [
+  { from: "SOL",   to: "ETH",   label: "SOL → ETH",       sub: "Solana Devnet → Sepolia" },
+  { from: "ETH",   to: "SOL",   label: "ETH → SOL",       sub: "Sepolia → Solana Devnet" },
+  { from: "PYUSD", to: "PYUSD", label: "PYUSD → PYUSD",   sub: "SOL Devnet ↔ ETH Sepolia bridge" },
+  { from: "PYUSD", to: "ETH",   label: "PYUSD → ETH",     sub: "PayPal USD → Ether (Sepolia)" },
+  { from: "ETH",   to: "PYUSD", label: "ETH → PYUSD",     sub: "Ether → PayPal USD (SOL)" },
+  { from: "SOL",   to: "PYUSD", label: "SOL → PYUSD",     sub: "Solana → PayPal USD (ETH)" },
+  { from: "PYUSD", to: "SOL",   label: "PYUSD → SOL",     sub: "PayPal USD → Solana Devnet" },
+];
+
+const CHAIN_TOKENS: Record<string, string> = { SOL: "SOL", ETH: "ETH" };
+
+/** chain = the actual blockchain network identifier (SOL or ETH) */
+interface TokenInfo { symbol: string; name: string; network: string; color: string; letter: string; chain: string; }
+const TOKENS: TokenInfo[] = [
+  { symbol: "SOL",   name: "Solana",              network: "Devnet",  color: "#9945ff", letter: "◎", chain: "SOL" },
+  { symbol: "ETH",   name: "Ethereum",            network: "Sepolia", color: "#627eea", letter: "Ξ",  chain: "ETH" },
+  { symbol: "PYUSD", name: "PayPal USD (SOL)",    network: "Devnet",  color: "#003087", letter: "₱",  chain: "SOL" },
+  { symbol: "PYUSD", name: "PayPal USD (ETH)",    network: "Sepolia", color: "#009cde", letter: "₱",  chain: "ETH" },
+];
+
+interface LiveRateData {
+  prices: { SOL: number; ETH: number; PYUSD: number };
+  rates: Record<string, Record<string, number>>;
+  source: string;
+  fetchedAt: string;
+}
+
+const STRATEGY_CONFIG: Record<string, { label: string; color: string; icon: string; desc: string }> = {
+  aggressive: { label: "AGGRESSIVE", color: "#ef4444", icon: "⚡", desc: "Lowest fee" },
+  instant:    { label: "INSTANT",    color: "#0ea5e9", icon: "🚀", desc: "Fastest" },
+  premium:    { label: "PREMIUM",    color: "#f59e0b", icon: "💎", desc: "Guaranteed SLA" },
+  ai:         { label: "AI AGENT",   color: P,         icon: "🤖", desc: "Claude-powered" },
+  custom:     { label: "CUSTOM",     color: "#f59e0b", icon: "⭐", desc: "Community" },
+  live:       { label: "LIVE TX",    color: M,         icon: "🟢", desc: "Real on-chain" },
+  pyusd:      { label: "PYUSD",      color: "#003087", icon: "₱",  desc: "PayPal USD bridge" },
+};
+
+const STATUS_PIPELINE = [
+  { key: "encrypted", label: "Intent encrypted",  desc: "Sealed on Encrypt FHE devnet",       icon: "🔒" },
+  { key: "bidding",   label: "Solver bidding",     desc: "Blind auction in progress",          icon: "⚔️" },
+  { key: "accepted",  label: "Solver accepted",    desc: "",                                    icon: "🤝" },
+  { key: "executing", label: "Solver executing",   desc: "Ika MPC signing in progress",        icon: "⚡" },
+  { key: "delivered", label: "Token delivered",    desc: "",                                    icon: "📦" },
+];
+
+// ── Browser-safe binary utilities (replaces Node.js Buffer, unavailable in browsers) ──
+function uint8ArrayToHex(bytes: Uint8Array): string {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+function hexToUint8Array(hex: string): Uint8Array {
+  const h = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const out = new Uint8Array(Math.ceil(h.length / 2));
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+function uint64LE(n: bigint): Uint8Array {
+  const v = new DataView(new ArrayBuffer(8));
+  v.setBigUint64(0, n, true);
+  return new Uint8Array(v.buffer);
+}
+function int64LE(n: bigint): Uint8Array {
+  const v = new DataView(new ArrayBuffer(8));
+  v.setBigInt64(0, n, true);
+  return new Uint8Array(v.buffer);
+}
+function concatBytes(...arrays: Uint8Array[]): Uint8Array {
+  const total = arrays.reduce((s, a) => s + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrays) { out.set(a, off); off += a.length; }
+  return out;
+}
+// encodeCreateIntentCalldata removed — calldata is now generated server-side
+// via GET /api/escrow/prepare-tx?dbIntentId=N which uses ethers ABI encoder for the
+// real createIntent(string,string,string,string,uint256,string) function signature.
+
+function chip(txt: string, color: string) {
+  return (
+    <span style={{
+      fontSize: "10px", fontWeight: 700, letterSpacing: "0.4px",
+      background: `${color}1a`, color, border: `1px solid ${color}35`,
+      borderRadius: "999px", padding: "2px 9px",
+    }}>{txt}</span>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const map: Record<string, string> = {
+    pending: "#64748b", encrypted: P, bidding: "#f59e0b",
+    accepted: "#0ea5e9", executing: "#f59e0b", delivered: M,
+    settled: M, failed: "#ef4444", delivery_failed: "#ef4444", refunded: "#94a3b8",
+  };
+  const c = map[status] ?? "#64748b";
+  const pulse = ["bidding","executing","accepted"].includes(status);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+      <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: c,
+        boxShadow: `0 0 6px ${c}`, display: "inline-block",
+        animation: pulse ? "pulse 1.5s infinite" : "none" }} />
+      <span style={{ color: c, fontWeight: 600, fontSize: "13px", textTransform: "capitalize" }}>{status}</span>
+    </span>
+  );
+}
+
+function StepIndicator({ current }: { current: string }) {
+  const steps = [
+    { key: "connect", label: "Connect", short: "1" },
+    { key: "dwallet", label: "dWallet", short: "2" },
+  ];
+  const idx = steps.findIndex(s => s.key === current);
+  return (
+    <div style={{ display: "flex", alignItems: "center", marginBottom: "32px" }}>
+      {steps.map((s, i) => {
+        const done   = i < idx;
+        const active = i === idx;
+        return (
+          <React.Fragment key={s.key}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "6px" }}>
+              <div style={{
+                width: "34px", height: "34px", borderRadius: "50%",
+                background: done ? `linear-gradient(135deg,${P},${M})` : active ? `${P}22` : "rgba(255,255,255,0.06)",
+                border: active ? `2px solid ${P}` : done ? "none" : "1.5px solid rgba(255,255,255,0.12)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                transition: "all 0.35s",
+                boxShadow: active ? `0 0 0 4px ${P}20` : "none",
+              }}>
+                {done ? (
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <path d="M2.5 7l3 3 6-6" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                ) : (
+                  <span style={{ fontSize: "12px", fontWeight: 700,
+                    color: active ? P : "#475569" }}>{s.short}</span>
+                )}
+              </div>
+              <span className="step-label" style={{
+                fontSize: "10px", fontWeight: 600, letterSpacing: "0.3px",
+                color: active ? "#e2e8f0" : done ? "#64748b" : "#334155",
+              }}>{s.label}</span>
+            </div>
+            {i < steps.length - 1 && (
+              <div style={{ flex: 1, height: "2px", margin: "0 4px",
+                background: i < idx ? `linear-gradient(90deg,${P},${M})` : "rgba(255,255,255,0.07)",
+                transition: "background 0.4s", position: "relative", top: "-9px",
+              }} />
+            )}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
 
 function SolverRace({ bids, winner }: { bids: SolverBid[]; winner: string | null }) {
   const [mounted, setMounted] = useState(false);
@@ -93,7 +291,7 @@ function SolverRace({ bids, winner }: { bids: SolverBid[]; winner: string | null
 }
 
 function TrackingTimeline({ trackingStatus, intentResult }: { trackingStatus: any; intentResult: IntentResult | null }) {
-  const isFailed = ["failed","refunded"].includes(trackingStatus.status);
+  const isFailed = ["failed","delivery_failed","refunded"].includes(trackingStatus.status);
   const statusOrder = ["encrypted","bidding","accepted","executing","delivered"];
   const currentIdx = Math.max(0, statusOrder.indexOf(
     trackingStatus.status === "settled" ? "delivered" : isFailed ? "encrypted" : trackingStatus.status
@@ -111,7 +309,14 @@ function TrackingTimeline({ trackingStatus, intentResult }: { trackingStatus: an
     const failed  = isFailed && i === 0;
     let desc = item.desc;
     if (item.key === "accepted")  desc = trackingStatus.solverId ?? "—";
-    if (item.key === "delivered") desc = txId ? `${txId.slice(0,18)}…` : "Pending";
+    if (item.key === "delivered") {
+      if (trackingStatus.deliveredAmount) {
+        const toChainLabel = trackingStatus.toChain ?? "";
+        desc = `${trackingStatus.deliveredAmount} ${toChainLabel}`;
+      } else {
+        desc = txId ? `${txId.slice(0,18)}…` : "Pending";
+      }
+    }
     return { ...item, done, active, failed, desc };
   });
 
@@ -125,10 +330,12 @@ function TrackingTimeline({ trackingStatus, intentResult }: { trackingStatus: an
           <span style={{ fontSize: "18px" }}>⚠️</span>
           <div>
             <div style={{ fontSize: "13px", fontWeight: 700, color: "#f87171" }}>
-              {trackingStatus.status === "refunded" ? "Intent refunded" : "Intent failed"}
+              {trackingStatus.status === "refunded" ? "Intent refunded"
+                : trackingStatus.status === "delivery_failed" ? "Delivery failed — no on-chain tx confirmed"
+                : "Intent failed"}
             </div>
             <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>
-              {trackingStatus.failureReason ?? "No solver accepted within the auction window."}
+              {trackingStatus.deliveryError ?? trackingStatus.failureReason ?? "No solver accepted within the auction window."}
             </div>
           </div>
         </div>
@@ -241,12 +448,29 @@ export default function App() {
   const [dwalletSubStep, setDwalletSubStep] = useState<"idle" | "signing" | "signed" | "dkg" | "done">("idle");
   const [dwalletError, setDwalletError] = useState("");
 
+  const [signMsg, setSignMsg] = useState("PrismDwallet: authorize this action");
+  const [signing, setSigning] = useState(false);
+  const [signResult, setSignResult] = useState<null | {
+    ok: boolean;
+    steps: Record<string, any>;
+    publicKeyHex?: string;
+    publicKeyShort?: string;
+    futureSignAttestation?: string;
+    futureSignResponseType?: string;
+    totalMs?: number;
+    message?: string;
+    messageHash?: string;
+    error?: string;
+  }>(null);
+  const [signPhase, setSignPhase] = useState<"idle"|"presign"|"futuresign"|"done"|"error">("idle");
+
   const [nlText, setNlText] = useState("");
   const [nlParsing, setNlParsing] = useState(false);
   const [fromChain, setFromChain] = useState("SOL");
   const [toChain, setToChain] = useState("ETH");
   const [amount, setAmount] = useState("0.1");
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const [intentResult, setIntentResult] = useState<IntentResult | null>(null);
   const [selectedSolver, setSelectedSolver] = useState<string | null>(null);
@@ -256,11 +480,20 @@ export default function App() {
   const [pollTimer, setPollTimer] = useState<ReturnType<typeof setInterval> | null>(null);
 
   const [copiedHash, setCopiedHash] = useState(false);
+  const [solverHealth, setSolverHealth] = useState<{
+    sol: { maxDeliverable: number; status: string };
+    eth: { maxDeliverable: number; status: string };
+    swapCapacity: { ethToSol: { maxOutputSol: number; status: string }; solToEth: { maxOutputEth: number; status: string } };
+    warnings: string[];
+  } | null>(null);
 
   const [showDispute, setShowDispute] = useState(false);
   const [disputeClaim, setDisputeClaim] = useState("");
   const [disputing, setDisputing] = useState(false);
   const [disputeResult, setDisputeResult] = useState<DisputeResult | null>(null);
+
+  const [refunding, setRefunding] = useState(false);
+  const [refundResult, setRefundResult] = useState<{ sig?: string; error?: string } | null>(null);
 
   const [showPrivacyProof, setShowPrivacyProof] = useState(false);
   const [copiedEncId, setCopiedEncId] = useState(false);
@@ -393,7 +626,6 @@ export default function App() {
   const [vaultDepositAmt, setVaultDepositAmt] = useState("");
   const [vaultWithdrawAmt, setVaultWithdrawAmt] = useState("");
   const [vaultToken, setVaultToken] = useState<"SOL" | "ETH">("SOL");
-  const [vaultWithdrawResult, setVaultWithdrawResult] = useState<string | null>(null);
   type VaultWithdrawData = {
     stealthAddress:  string;
     monitorKey:      string;
@@ -445,6 +677,40 @@ export default function App() {
   useEffect(() => { setFromChain(fromToken.chain); }, [fromToken]);
   useEffect(() => { setToChain(toToken.chain); }, [toToken]);
   useEffect(() => { if (fromAmount) setAmount(fromAmount); }, [fromAmount]);
+
+  // ── Stealth wallet localStorage persistence ──────────────────────────────
+  const stealthStorageKey = (pubkey: string) => `prism_stealth_${pubkey}`;
+
+  // Restore stealth state from localStorage when wallet connects or page refreshes
+  useEffect(() => {
+    if (!phantomPubkey) return;
+    try {
+      const saved = localStorage.getItem(stealthStorageKey(phantomPubkey));
+      if (saved) {
+        const { address, monitorKey, chain } = JSON.parse(saved);
+        if (address && monitorKey) {
+          setSrAddress(address);
+          setSrMonitorKey(monitorKey);
+          setSrChain((chain as "SOL" | "ETH") ?? "SOL");
+          setSrTabChain((chain as "SOL" | "ETH") ?? "SOL");
+        }
+      }
+    } catch { /* ignore malformed storage */ }
+  }, [phantomPubkey]);
+
+  // Auto-save stealth state to localStorage on every change; clear when empty
+  useEffect(() => {
+    if (!phantomPubkey) return;
+    if (srAddress && srMonitorKey) {
+      localStorage.setItem(stealthStorageKey(phantomPubkey), JSON.stringify({
+        address:    srAddress,
+        monitorKey: srMonitorKey,
+        chain:      srChain,
+      }));
+    } else {
+      localStorage.removeItem(stealthStorageKey(phantomPubkey));
+    }
+  }, [srAddress, srMonitorKey, srChain, phantomPubkey]);
 
   // Clear stealth address when destination chain changes — address format differs per chain
   useEffect(() => {
@@ -615,6 +881,22 @@ export default function App() {
     if (step === "vault" && phantomPubkey) loadVaultData();
   }, [step, phantomPubkey]);
 
+  // ── Solver health fetch (runs when intent form is shown or toToken changes) ─
+  useEffect(() => {
+    if (step !== "intent") return;
+    let cancelled = false;
+    const fetchHealth = async () => {
+      try {
+        const r = await fetch(`${API}/api/solver/health`);
+        if (!r.ok || cancelled) return;
+        const data = await r.json();
+        if (!cancelled) setSolverHealth(data);
+      } catch { /* non-fatal — banner stays hidden */ }
+    };
+    fetchHealth();
+    return () => { cancelled = true; };
+  }, [step, toToken.chain]);
+
   // ── Stealth Receive balance + dark pool status polling ────────────────────
   const srPollRef    = useRef<ReturnType<typeof setInterval> | null>(null);
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -667,7 +949,7 @@ export default function App() {
       ].join("\n");
       const msgBytes = new TextEncoder().encode(authMessage);
       const { signature } = await window.solana.signMessage(msgBytes, "utf8");
-      const phantomSignature = Buffer.from(signature).toString("hex");
+      const phantomSignature = uint8ArrayToHex(signature as Uint8Array);
       setDwalletSubStep("signed");
       setDwalletSubStep("dkg");
       const res = await fetch(`${API}/api/dwallet/create`, {
@@ -683,9 +965,13 @@ export default function App() {
     } catch (e: any) {
       setDwalletSubStep("idle");
       const msg: string = e.message ?? String(e);
-      setDwalletError(msg.includes("User rejected") || msg.includes("rejected")
-        ? "Signature rejected. Please approve the Phantom popup to authorize your dWallet."
-        : msg);
+      if (msg.includes("User rejected") || msg.includes("rejected")) {
+        setDwalletError("Signature rejected. Please approve the Phantom popup to authorize your dWallet.");
+      } else if (msg.includes("Ika") || msg.includes("DKG") || msg.includes("gRPC") || msg.includes("MPC") || msg.includes("503")) {
+        setDwalletError(`Ika MPC offline — dWallet cannot be generated right now. Try again in a few minutes.\n\nDetail: ${msg}`);
+      } else {
+        setDwalletError(msg);
+      }
     } finally { setCreatingDwallet(false); }
   }
 
@@ -708,6 +994,7 @@ export default function App() {
       } catch {} finally { setNlParsing(false); }
     }
     if (!amt || parseFloat(amt) <= 0) { alert("Masukkan jumlah yang valid"); return; }
+    setSubmitError(null);
     setSubmitting(true);
     try {
       const fromToken = CHAIN_TOKENS[fc] ?? fc;
@@ -728,41 +1015,142 @@ export default function App() {
       setIntentResult(submitData);
       const bestSolverId = submitData.bestBid?.solverId ?? null;
       setSelectedSolver(bestSolverId);
-      await _lockEscrowAndAccept(submitData, bestSolverId, amt);
-    } catch (e: any) { alert(e.message); setSubmitting(false); }
+      await _lockEscrowAndAccept(submitData, bestSolverId, amt, fc);
+    } catch (e: any) {
+      const msg: string = e.message ?? String(e);
+      setSubmitError(msg);
+      setSubmitting(false);
+    }
   }
 
-  async function _lockEscrowAndAccept(result: IntentResult, solverId: string | null, amt: string) {
+  async function _lockEscrowAndAccept(result: IntentResult, solverId: string | null, amt: string, fc: string) {
     if (!solverId) { setSubmitting(false); return; }
     setAccepting(true);
     try {
-      const cfgRes = await fetch(`${API}/api/escrow/config`);
-      if (!cfgRes.ok) throw new Error("Gagal fetch escrow config");
-      const cfg = await cfgRes.json();
-      const { Connection, Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } =
-        await import("@solana/web3.js");
-      const connection = new Connection(cfg.rpcUrl, "confirmed");
+      let sourceTxId: string | undefined;
 
-      // Convert amount to SOL lamports using live exchange rate if fromChain !== SOL
-      const price = getPrice(fromChain); // ETH or SOL price in USD
-      const solPrice = getPrice("SOL");
-      const amtNum = parseFloat(amt);
-      let amtSol = amtNum;
-      if (fromChain !== "SOL" && price && solPrice) {
-        amtSol = amtNum * (price / solPrice);
+      if (fc === "SOL") {
+        // SOL origin: fetch the per-intent escrow address for this intentId,
+        // then user signs a Solana tx to lock SOL in that unique escrow account.
+        const intentId = result?.intentId;
+        if (!intentId) throw new Error("No intentId — cannot derive SOL escrow address");
+        const escrowRes = await fetch(`${API}/api/intent/${intentId}/sol-escrow`);
+        if (!escrowRes.ok) throw new Error("Failed to fetch per-intent SOL escrow address");
+        const escrowCfg = await escrowRes.json();
+        const escrowAddress: string = escrowCfg.escrowAddress;
+        if (!escrowAddress) throw new Error("No SOL escrow address returned from API");
+
+        const cfgRes = await fetch(`${API}/api/escrow/config`);
+        if (!cfgRes.ok) throw new Error("Failed to fetch escrow config");
+        const cfg = await cfgRes.json();
+        const { Connection, Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL, TransactionInstruction } =
+          await import("@solana/web3.js");
+        const connection = new Connection(cfg.rpcUrl, "confirmed");
+        const lamports = Math.round(parseFloat(amt) * LAMPORTS_PER_SOL);
+        if (!lamports || lamports <= 0) throw new Error("Invalid amount for escrow");
+        const { blockhash } = await connection.getLatestBlockhash();
+        const userPk = new PublicKey(phantomPubkey);
+        const escrowPk = new PublicKey(escrowAddress);
+
+        let tx: InstanceType<typeof Transaction>;
+        if (escrowCfg.solEscrowType === "pda" && cfg.solEscrowProgramId) {
+          // Anchor PDA mode — single Anchor `deposit` instruction.
+          // The program's `init` constraint allocates the escrow account and the
+          // internal CPI transfers `amount` lamports from depositor to the PDA.
+          // No preceding SystemProgram::Transfer needed.
+          //
+          // Discriminator: sha256("global:deposit")[0:8] = [0xf2,0x23,0xc6,0x89,0x52,0xe1,0xf2,0xb6]
+          // Args (borsh): intent_id u64 LE (8) | deadline i64 LE (8) | amount u64 LE (8)
+          // Accounts (match Deposit<'info> struct order):
+          //   [0] escrow_account PDA (writable, created by Anchor init)
+          //   [1] depositor          (signer, writable — pays rent + lamports)
+          //   [2] system_program
+          const DEPOSIT_DISC = new Uint8Array([0xf2, 0x23, 0xc6, 0x89, 0x52, 0xe1, 0xf2, 0xb6]);
+          const intentBuf   = uint64LE(BigInt(intentId));
+          const deadlineSec = BigInt(Math.floor(Date.now() / 1000) + 24 * 3600); // 24 h window
+          const deadlineBuf = int64LE(deadlineSec);
+          const amountBuf   = uint64LE(BigInt(lamports));
+          const depositData = concatBytes(DEPOSIT_DISC, intentBuf, deadlineBuf, amountBuf);
+
+          const depositIx = new TransactionInstruction({
+            programId: new PublicKey(cfg.solEscrowProgramId),
+            keys: [
+              { pubkey: escrowPk, isSigner: false, isWritable: true  }, // [0] escrow_account (PDA)
+              { pubkey: userPk,   isSigner: true,  isWritable: true  }, // [1] depositor
+              { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // [2] system_program
+            ],
+            data: depositData,
+          });
+          tx = new Transaction({ recentBlockhash: blockhash, feePayer: userPk }).add(depositIx);
+        } else {
+          // Keypair fallback (only when SOL_ESCROW_MODE=keypair is explicitly set on server):
+          // plain SystemProgram::Transfer to the per-intent derived keypair address.
+          const transferIx = SystemProgram.transfer({ fromPubkey: userPk, toPubkey: escrowPk, lamports });
+          tx = new Transaction({ recentBlockhash: blockhash, feePayer: userPk }).add(transferIx);
+        }
+
+        if (!window.solana) throw new Error("Phantom not connected");
+        const signed = await window.solana.signTransaction(tx);
+        const rawTx = signed.serialize();
+        sourceTxId = await connection.sendRawTransaction(rawTx, { skipPreflight: false });
+        await connection.confirmTransaction(sourceTxId, "confirmed");
+      } else if (fc === "ETH" || fc === "BASE" || fc === "ARB") {
+        // ETH origin: user signs ETH tx via Phantom's Ethereum provider (EIP-1193)
+        const phantomEth = (window as any).phantom?.ethereum ?? (window as any).ethereum;
+        if (!phantomEth) throw new Error("Phantom Ethereum provider not found. Open Phantom and enable Ethereum.");
+
+        // Get escrow contract address from API config
+        const cfgRes = await fetch(`${API}/api/escrow/config`);
+        if (!cfgRes.ok) throw new Error("Failed to fetch escrow config");
+        const cfg = await cfgRes.json();
+        const contractAddress: string = cfg.ethEscrowContract ?? cfg.ethEscrowAddress;
+        if (!contractAddress) throw new Error("ETH escrow contract address not available");
+
+        // Switch Phantom to Sepolia (chainId 0xaa36a7 = 11155111)
+        try {
+          await phantomEth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0xaa36a7" }] });
+        } catch (switchErr: any) {
+          // Chain not added yet — add it
+          if (switchErr.code === 4902) {
+            await phantomEth.request({
+              method: "wallet_addEthereumChain",
+              params: [{ chainId: "0xaa36a7", chainName: "Sepolia",
+                nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+                rpcUrls: ["https://rpc.sepolia.org"],
+                blockExplorerUrls: ["https://sepolia.etherscan.io"] }],
+            });
+          } else throw switchErr;
+        }
+
+        // Request user's Phantom ETH accounts
+        const accounts: string[] = await phantomEth.request({ method: "eth_requestAccounts" });
+        if (!accounts?.length) throw new Error("No Ethereum accounts found in Phantom");
+        const fromAddress = accounts[0];
+
+        // Fetch server-generated calldata for createIntent(string,string,string,string,uint256,string)
+        // Server uses ethers ABI encoder — correct encoding for the real deployed contract.
+        const prepRes = await fetch(`${API}/api/escrow/prepare-tx?dbIntentId=${result.intentId}`);
+        if (!prepRes.ok) throw new Error("Failed to prepare ETH deposit calldata from server");
+        const prepData = await prepRes.json();
+        const calldata: string = prepData.calldata;
+        const escrowAddr: string = prepData.contractAddress ?? contractAddress;
+
+        const amtFloat = parseFloat(amt);
+        if (!amtFloat || amtFloat <= 0) throw new Error("Invalid ETH amount");
+        const weiHex = "0x" + BigInt(Math.round(amtFloat * 1e18)).toString(16);
+
+        // Send tx — omit chainId (already switched via wallet_switchEthereumChain).
+        // Explicit gas limit so Phantom doesn't fail gas estimation (createIntent uses ~120k gas).
+        const txHash: string = await phantomEth.request({
+          method: "eth_sendTransaction",
+          params: [{ from: fromAddress, to: escrowAddr, value: weiHex, data: calldata, gas: "0x49710" }],
+        });
+        if (!txHash) throw new Error("ETH escrow deposit transaction was not submitted");
+        sourceTxId = txHash;
+        // UX: don't wait for confirmation — tracking UI shows pending→confirmed via Etherscan link.
       }
-      const lamports = Math.round(amtSol * LAMPORTS_PER_SOL);
-      if (!lamports || lamports <= 0) throw new Error("Jumlah tidak valid untuk escrow");
-      const { blockhash } = await connection.getLatestBlockhash();
-      const tx = new Transaction({ recentBlockhash: blockhash, feePayer: new PublicKey(phantomPubkey) }).add(
-        SystemProgram.transfer({ fromPubkey: new PublicKey(phantomPubkey),
-          toPubkey: new PublicKey(cfg.escrowPubkey), lamports })
-      );
-      if (!window.solana) throw new Error("Phantom tidak terkoneksi");
-      const signed = await window.solana.signTransaction(tx);
-      const rawTx = signed.serialize();
-      const sourceTxId = await connection.sendRawTransaction(rawTx, { skipPreflight: false });
-      await connection.confirmTransaction(sourceTxId, "confirmed");
+      // For BTC / other origins: server handles escrow lock inside /api/intent/accept.
+
       const acceptRes = await fetch(`${API}/api/intent/accept`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ intentId: result.intentId, solverId,
@@ -783,7 +1171,7 @@ export default function App() {
         const res = await fetch(`${API}/api/intent/${id}`);
         const data = await res.json();
         setTrackingStatus((prev: any) => ({ ...prev, ...data }));
-        if (["settled","failed","refunded"].includes(data.status)) clearInterval(timer);
+        if (["settled","failed","delivery_failed","refunded"].includes(data.status)) clearInterval(timer);
       } catch {}
     }, 2500);
     setPollTimer(timer);
@@ -804,10 +1192,67 @@ export default function App() {
     finally { setDisputing(false); }
   }
 
+  async function handleRefund() {
+    if (!intentResult?.intentId || !phantomPubkey) return;
+    setRefunding(true); setRefundResult(null);
+    try {
+      const res = await fetch(`${API}/api/intent/${intentResult.intentId}/refund-tx`);
+      const params = await res.json();
+      if (!res.ok) throw new Error(params.error ?? "Failed to fetch refund tx");
+
+      const { Connection: Conn, PublicKey: PK, Transaction: Tx, TransactionInstruction: TxIx } =
+        await import("@solana/web3.js");
+      const conn = new Conn(params.rpcUrl, "confirmed");
+      const depositorPubkey = new PK(phantomPubkey);
+      const escrowPda = new PK(params.escrowPda);
+      const ixData = hexToUint8Array(params.instructionDataHex);
+      const ix = new TxIx({
+        programId: new PK(params.programId),
+        keys: [
+          { pubkey: escrowPda,      isSigner: false, isWritable: true },
+          { pubkey: depositorPubkey, isSigner: true,  isWritable: true },
+        ],
+        data: ixData,
+      });
+      const { blockhash } = await conn.getLatestBlockhash();
+      const tx = new Tx({ recentBlockhash: blockhash, feePayer: depositorPubkey }).add(ix);
+      const provider = (window as any).phantom?.solana;
+      if (!provider) throw new Error("Phantom wallet not found");
+      const { signature } = await provider.signAndSendTransaction(tx);
+      setRefundResult({ sig: signature });
+      setTrackingStatus((prev: any) => ({ ...prev, status: "refunded" }));
+    } catch (e: any) {
+      setRefundResult({ error: e.message });
+    } finally { setRefunding(false); }
+  }
+
+  async function handleDWalletSign() {
+    if (!phantomPubkey || !dwalletId || signing) return;
+    setSigning(true);
+    setSignResult(null);
+    setSignPhase("presign");
+    try {
+      const res = await fetch(`${API}/api/dwallet/sign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phantomPubkey, message: signMsg.trim(), curve: "curve25519" }),
+      });
+      const data = await res.json();
+      setSignResult(data);
+      setSignPhase(data.ok ? "done" : "error");
+    } catch (e: any) {
+      setSignResult({ ok: false, steps: {}, error: e.message });
+      setSignPhase("error");
+    } finally {
+      setSigning(false);
+    }
+  }
+
   function resetApp() {
     setStep("dashboard"); setIntentResult(null); setSelectedSolver(null);
     setTrackingStatus(null); setNlText(""); setShowDispute(false);
     setDisputeResult(null); setDisputeClaim("");
+    setRefunding(false); setRefundResult(null);
     setShowPrivacyProof(false); setCopiedEncId(false);
     setTimeLockEnabled(false); setTimeLockDate("");
     setVaultWithdrawResult(null);
@@ -1448,6 +1893,178 @@ export default function App() {
                   ))}
                 </div>
 
+                {/* ── Live MPC Sign Panel ─────────────────────────────── */}
+                {dwalletId && (
+                  <div style={{
+                    ...card, marginBottom: "14px",
+                    border: `1px solid ${P}28`,
+                    background: `linear-gradient(135deg, ${P}0a 0%, rgba(255,255,255,0.02) 100%)`,
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
+                      <div style={{ width: "32px", height: "32px", borderRadius: "50%",
+                        background: `${P}20`, border: `1.5px solid ${P}40`,
+                        display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", flexShrink: 0 }}>
+                        🔏
+                      </div>
+                      <div>
+                        <div style={{ fontSize: "14px", fontWeight: 700, color: "#f1f5f9", letterSpacing: "-0.2px" }}>
+                          MPC Sign
+                        </div>
+                        <div style={{ fontSize: "11px", color: "#475569", marginTop: "1px" }}>
+                          Live Ika dWallet · Curve25519 · EdDSA
+                        </div>
+                      </div>
+                      {signResult?.ok && (
+                        <span style={{ marginLeft: "auto", fontSize: "10px", fontWeight: 700, color: M,
+                          background: `${M}18`, border: `1px solid ${M}30`, borderRadius: "6px", padding: "2px 8px" }}>
+                          ✓ SIGNED
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Step indicators */}
+                    <div style={{ display: "flex", gap: "0", marginBottom: "14px", alignItems: "center" }}>
+                      {[
+                        { key: "dkg",        label: "DKG",        sub: "cached" },
+                        { key: "presign",    label: "Presign",    sub: "live MPC" },
+                        { key: "futureSign", label: "FutureSign", sub: "live MPC" },
+                      ].map((s, i) => {
+                        const stepData = signResult?.steps?.[s.key];
+                        const isDone   = !!stepData?.ok;
+                        const isFail   = stepData && !stepData.ok;
+                        const isActive = signing && (
+                          (s.key === "presign"    && signPhase === "presign") ||
+                          (s.key === "futureSign" && signPhase === "futuresign")
+                        );
+                        const dotColor = isDone ? M : isFail ? "#ef4444" : isActive ? P : "#334155";
+                        return (
+                          <React.Fragment key={s.key}>
+                            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "4px" }}>
+                              <div style={{
+                                width: "28px", height: "28px", borderRadius: "50%",
+                                background: isDone ? `linear-gradient(135deg,${P},${M})` : isActive ? `${P}22` : isFail ? "rgba(239,68,68,0.12)" : "rgba(255,255,255,0.05)",
+                                border: isActive ? `2px solid ${P}` : isFail ? "1.5px solid rgba(239,68,68,0.4)" : isDone ? "none" : "1.5px solid rgba(255,255,255,0.1)",
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                boxShadow: isDone ? `0 0 10px ${M}30` : isActive ? `0 0 0 3px ${P}20` : "none",
+                                transition: "all 0.3s",
+                              }}>
+                                {isDone ? (
+                                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                                    <path d="M2.5 7l3 3 6-6" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                  </svg>
+                                ) : isFail ? (
+                                  <span style={{ fontSize: "11px", color: "#f87171" }}>✕</span>
+                                ) : isActive ? (
+                                  <div style={{ width: "8px", height: "8px", borderRadius: "50%",
+                                    background: P, animation: "pulse 1.2s infinite" }} />
+                                ) : (
+                                  <div style={{ width: "8px", height: "8px", borderRadius: "50%",
+                                    background: dotColor }} />
+                                )}
+                              </div>
+                              <div style={{ textAlign: "center" }}>
+                                <div style={{ fontSize: "10px", fontWeight: 700, color: isDone ? "#e2e8f0" : isActive ? "#f1f5f9" : "#475569" }}>
+                                  {s.label}
+                                </div>
+                                <div style={{ fontSize: "9px", color: isDone ? M : "#334155" }}>
+                                  {isDone ? `${stepData?.latencyMs ?? 0}ms` : s.sub}
+                                </div>
+                              </div>
+                            </div>
+                            {i < 2 && (
+                              <div style={{ width: "20px", height: "1.5px", flexShrink: 0, marginBottom: "12px",
+                                background: signResult?.steps?.[["presign","futureSign"][i]]?.ok
+                                  ? `linear-gradient(90deg,${P},${M})` : "rgba(255,255,255,0.08)" }} />
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
+
+                    {/* Message input */}
+                    <textarea
+                      rows={2}
+                      value={signMsg}
+                      onChange={e => { setSignMsg(e.target.value); setSignResult(null); setSignPhase("idle"); }}
+                      placeholder="Message to sign…"
+                      style={{
+                        ...inp, resize: "none", marginBottom: "10px", fontSize: "13px",
+                        fontFamily: "'Space Mono', monospace",
+                      }}
+                    />
+
+                    {/* Sign button */}
+                    <button
+                      onClick={handleDWalletSign}
+                      disabled={signing || !signMsg.trim()}
+                      style={{
+                        width: "100%", padding: "11px 0", borderRadius: "10px",
+                        background: signing ? "rgba(124,58,237,0.15)" : `linear-gradient(135deg,${P},#6366f1)`,
+                        color: signing ? "#7c3aed" : "#fff", fontWeight: 700, fontSize: "14px",
+                        cursor: signing || !signMsg.trim() ? "not-allowed" : "pointer",
+                        display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
+                        transition: "all 0.2s",
+                        border: signing ? `1px solid ${P}40` : "none",
+                      } as React.CSSProperties}
+                    >
+                      {signing ? (
+                        <>
+                          <div style={{ width: "14px", height: "14px", border: `2px solid ${P}`,
+                            borderTopColor: "transparent", borderRadius: "50%",
+                            animation: "spin 0.7s linear infinite" }} />
+                          {signPhase === "presign" ? "Presign MPC…" : "FutureSign MPC…"}
+                        </>
+                      ) : (
+                        "Sign with dWallet →"
+                      )}
+                    </button>
+
+                    {/* Result */}
+                    {signResult && (
+                      <div style={{
+                        marginTop: "12px", borderRadius: "10px", padding: "12px 14px",
+                        background: signResult.ok ? `${M}08` : "rgba(239,68,68,0.07)",
+                        border: `1px solid ${signResult.ok ? M : "#ef4444"}25`,
+                        animation: "rise 0.3s ease both",
+                      }}>
+                        {signResult.ok ? (
+                          <>
+                            <div style={{ fontSize: "11px", fontWeight: 700, color: M, marginBottom: "8px" }}>
+                              ✓ Signed via Ika MPC — {signResult.totalMs}ms total
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: "5px" }}>
+                              <div style={{ display: "flex", gap: "8px", alignItems: "baseline" }}>
+                                <span style={{ fontSize: "10px", color: "#475569", minWidth: "64px" }}>pubkey</span>
+                                <span style={{ fontSize: "10px", fontFamily: "'Space Mono', monospace",
+                                  color: "#94a3b8", wordBreak: "break-all" }}>
+                                  {signResult.publicKeyShort}
+                                </span>
+                              </div>
+                              <div style={{ display: "flex", gap: "8px", alignItems: "baseline" }}>
+                                <span style={{ fontSize: "10px", color: "#475569", minWidth: "64px" }}>attestation</span>
+                                <span style={{ fontSize: "10px", fontFamily: "'Space Mono', monospace",
+                                  color: M, wordBreak: "break-all" }}>
+                                  {signResult.futureSignAttestation?.slice(0, 48)}…
+                                </span>
+                              </div>
+                              <div style={{ display: "flex", gap: "8px", alignItems: "baseline" }}>
+                                <span style={{ fontSize: "10px", color: "#475569", minWidth: "64px" }}>type</span>
+                                <span style={{ fontSize: "10px", color: "#64748b" }}>
+                                  {signResult.futureSignResponseType} · EdDSA/Sha512 · Ika devnet
+                                </span>
+                              </div>
+                            </div>
+                          </>
+                        ) : (
+                          <div style={{ fontSize: "11px", color: "#f87171" }}>
+                            {signResult.error ?? "MPC signing failed — retry"}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Privacy chips */}
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "20px" }}>
                   {[
@@ -1629,6 +2246,92 @@ export default function App() {
               )}
             </div>
 
+            {/* ── Solver liquidity health banner ── */}
+            {solverHealth && (() => {
+              const isEthToSol = fromToken.chain === "ETH" && toToken.chain === "SOL";
+              const isSolToEth = fromToken.chain === "SOL" && (toToken.chain === "ETH" || toToken.chain === "BASE" || toToken.chain === "ARB");
+              if (!isEthToSol && !isSolToEth) return null;
+              const cap = isEthToSol ? solverHealth.swapCapacity.ethToSol : solverHealth.swapCapacity.solToEth;
+              const maxOut = isEthToSol ? cap.maxOutputSol : (solverHealth.swapCapacity.solToEth.maxOutputEth ?? 0);
+              const outSymbol = isEthToSol ? "SOL" : "ETH";
+              const isCritical = cap.status === "critical";
+              const isLow = cap.status === "low";
+              const isOk = !isCritical && !isLow;
+              const borderColor = isCritical ? "rgba(239,68,68,0.35)" : isLow ? "rgba(251,191,36,0.35)" : "rgba(74,222,128,0.25)";
+              const bgColor = isCritical ? "rgba(239,68,68,0.06)" : isLow ? "rgba(251,191,36,0.06)" : "rgba(74,222,128,0.04)";
+              const dotColor = isCritical ? "#ef4444" : isLow ? "#fbbf24" : "#4ade80";
+              const label = isCritical ? "Unavailable" : isLow ? "Low liquidity" : "Liquidity healthy";
+              return (
+                <div style={{ background: bgColor, border: `1px solid ${borderColor}`,
+                  borderRadius: "12px", padding: "10px 14px", marginBottom: "14px",
+                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={{ width: "7px", height: "7px", borderRadius: "50%",
+                      background: dotColor, display: "inline-block", flexShrink: 0 }} />
+                    <span style={{ fontSize: "11px", fontWeight: 700, color: dotColor }}>{label}</span>
+                    {!isCritical && (
+                      <span style={{ fontSize: "11px", color: "#64748b" }}>
+                        solver can deliver up to <strong style={{ color: "#e2e8f0" }}>{maxOut.toFixed(4)} {outSymbol}</strong>
+                      </span>
+                    )}
+                    {isCritical && (
+                      <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                        {isEthToSol ? "ETH→SOL" : "SOL→ETH"} swaps not available right now
+                      </span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: "10px", color: "#475569", flexShrink: 0 }}>solver inventory</span>
+                </div>
+              );
+            })()}
+
+            {/* ── ETH origin info banner ── */}
+            {fromToken.chain === "ETH" && (
+              <div style={{
+                background: "rgba(98,126,234,0.08)", border: "1px solid rgba(98,126,234,0.25)",
+                borderRadius: "14px", padding: "14px 16px", marginBottom: "16px",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+                  <span style={{ fontSize: "16px" }}>Ξ</span>
+                  <span style={{ fontSize: "12px", fontWeight: 700, color: "#93c5fd" }}>ETH Sepolia Deposit Required</span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                    <span style={{ fontSize: "10px", color: "#475569", minWidth: "52px", fontWeight: 600 }}>FROM</span>
+                    <span style={{ fontSize: "11px", fontFamily: "'Space Mono', monospace", color: "#93c5fd",
+                      background: "rgba(98,126,234,0.12)", borderRadius: "6px", padding: "2px 8px" }}>
+                      {phantomEthAddress
+                        ? `${phantomEthAddress.slice(0, 10)}…${phantomEthAddress.slice(-6)}`
+                        : "Connect Phantom ETH"}
+                    </span>
+                    {phantomEthAddress && (
+                      <span style={{ fontSize: "10px", color: "#475569" }}>(your Phantom ETH)</span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                    <span style={{ fontSize: "10px", color: "#475569", minWidth: "52px", fontWeight: 600 }}>TO</span>
+                    <span style={{ fontSize: "11px", fontFamily: "'Space Mono', monospace", color: "#64748b",
+                      background: "rgba(255,255,255,0.04)", borderRadius: "6px", padding: "2px 8px" }}>
+                      Escrow contract (Sepolia)
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                    <span style={{ fontSize: "10px", color: "#475569", minWidth: "52px", fontWeight: 600 }}>RECV</span>
+                    <span style={{ fontSize: "11px", fontFamily: "'Space Mono', monospace", color: "#4ade80",
+                      background: "rgba(74,222,128,0.07)", borderRadius: "6px", padding: "2px 8px" }}>
+                      {phantomPubkey
+                        ? `${phantomPubkey.slice(0, 10)}…${phantomPubkey.slice(-6)}`
+                        : "—"}
+                    </span>
+                    <span style={{ fontSize: "10px", color: "#475569" }}>(your SOL address)</span>
+                  </div>
+                </div>
+                <div style={{ marginTop: "10px", fontSize: "11px", color: "#64748b", lineHeight: 1.5,
+                  paddingTop: "10px", borderTop: "1px solid rgba(98,126,234,0.15)" }}>
+                  ⚡ Phantom akan membuka popup konfirmasi ETH deposit. Setujui untuk melanjutkan swap.
+                </div>
+              </div>
+            )}
 
             {/* NL textarea — optional AI override */}
             <div style={{ marginBottom: "20px" }}>
@@ -1669,31 +2372,47 @@ export default function App() {
             </div>
 
             {/* CTA */}
-            <button onClick={handleSmartSubmit} disabled={submitting || nlParsing || accepting}
-              className="pri-btn hide-on-mobile" style={{ ...primaryBtn, fontSize: "17px", padding: "17px 28px" }}>
-              {nlParsing ? (
-                <>
-                  <span style={{ width: "16px", height: "16px", border: "2px solid rgba(255,255,255,0.4)",
-                    borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite",
-                    display: "inline-block" }} />
-                  AI parsing intent…
-                </>
-              ) : accepting ? (
-                <>
-                  <span style={{ width: "16px", height: "16px", border: "2px solid rgba(255,255,255,0.4)",
-                    borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite",
-                    display: "inline-block" }} />
-                  Locking escrow in Phantom…
-                </>
-              ) : submitting ? (
-                <>
-                  <span style={{ width: "16px", height: "16px", border: "2px solid rgba(255,255,255,0.4)",
-                    borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite",
-                    display: "inline-block" }} />
-                  Finding best solver…
-                </>
-              ) : "Swap Privately →"}
-            </button>
+            {(() => {
+              const isEthToSol = fromToken.chain === "ETH" && toToken.chain === "SOL";
+              const isSolToEth = fromToken.chain === "SOL" && (toToken.chain === "ETH" || toToken.chain === "BASE" || toToken.chain === "ARB");
+              const isCrossChain = isEthToSol || isSolToEth;
+              const inventoryCritical = isCrossChain && solverHealth !== null && (() => {
+                if (isEthToSol) return solverHealth.swapCapacity.ethToSol.status === "critical";
+                if (isSolToEth) return solverHealth.swapCapacity.solToEth.status === "critical";
+                return false;
+              })();
+              const ctaDisabled = submitting || nlParsing || accepting || inventoryCritical;
+              return (
+                <button onClick={inventoryCritical ? undefined : handleSmartSubmit}
+                  disabled={ctaDisabled}
+                  className="pri-btn hide-on-mobile"
+                  style={{ ...primaryBtn, fontSize: "17px", padding: "17px 28px",
+                    ...(inventoryCritical ? { opacity: 0.45, cursor: "not-allowed", background: "#334155", borderColor: "#475569" } : {}) }}>
+                  {nlParsing ? (
+                    <>
+                      <span style={{ width: "16px", height: "16px", border: "2px solid rgba(255,255,255,0.4)",
+                        borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite",
+                        display: "inline-block" }} />
+                      AI parsing intent…
+                    </>
+                  ) : accepting ? (
+                    <>
+                      <span style={{ width: "16px", height: "16px", border: "2px solid rgba(255,255,255,0.4)",
+                        borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite",
+                        display: "inline-block" }} />
+                      Locking escrow in Phantom…
+                    </>
+                  ) : submitting ? (
+                    <>
+                      <span style={{ width: "16px", height: "16px", border: "2px solid rgba(255,255,255,0.4)",
+                        borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite",
+                        display: "inline-block" }} />
+                      Finding best solver…
+                    </>
+                  ) : inventoryCritical ? "Solver offline — no inventory. Try again later." : "Swap Privately →"}
+                </button>
+              );
+            })()}
 
             {/* Trust badges row */}
             <div style={{ display: "flex", gap: "8px", marginTop: "16px", flexWrap: "wrap" }}>
@@ -1707,6 +2426,21 @@ export default function App() {
                   borderRadius: "999px", padding: "3px 10px" }}>{t.label}</span>
               ))}
             </div>
+
+            {/* Submit error banner — shown when intent creation fails (e.g. Encrypt FHE offline) */}
+            {submitError && (
+              <div style={{ display: "flex", alignItems: "flex-start", gap: "10px", marginTop: "12px",
+                background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.3)",
+                borderRadius: "10px", padding: "12px 14px" }}>
+                <span style={{ fontSize: "16px", flexShrink: 0 }}>🚫</span>
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 700, color: "#f87171", marginBottom: "4px" }}>
+                    Intent creation failed
+                  </div>
+                  <div style={{ fontSize: "12px", color: "#94a3b8", lineHeight: 1.6 }}>{submitError}</div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1791,9 +2525,18 @@ export default function App() {
                 ) : null;
                 const mainRows = [
                   { label: "Intent ID",       val: `#${intentResult?.intentId}`,                         link: null as string|null, live: false },
-                  { label: "Escrow Lock TX",  val: trackingStatus.sourceTxId ? `${trackingStatus.sourceTxId.slice(0,18)}…` : "—", link: trackingStatus.sourceTxExplorer ?? (trackingStatus.sourceTxId ? `https://explorer.solana.com/tx/${trackingStatus.sourceTxId}?cluster=devnet` : null), live: !!trackingStatus.sourceTxId && !String(trackingStatus.sourceTxId ?? "").startsWith("sim_") },
-                  { label: "Escrow PDA",      val: trackingStatus.escrowPda ? `${trackingStatus.escrowPda.slice(0,18)}…` : "—", link: trackingStatus.escrowPda ? `https://explorer.solana.com/address/${trackingStatus.escrowPda}?cluster=devnet` : null, live: false },
+                  { label: "Escrow Lock TX",  val: trackingStatus.sourceTxId ? `${trackingStatus.sourceTxId.slice(0,18)}…` : "—", link: trackingStatus.sourceTxExplorer ?? (trackingStatus.sourceTxId ? (trackingStatus.sourceTxId.startsWith("0x") ? `https://sepolia.etherscan.io/tx/${trackingStatus.sourceTxId}` : `https://explorer.solana.com/tx/${trackingStatus.sourceTxId}?cluster=devnet`) : null), live: !!trackingStatus.sourceTxId && !String(trackingStatus.sourceTxId ?? "").startsWith("sim_") },
+                  { label: trackingStatus.escrowPda?.startsWith("0x") ? "Escrow (ETH Sepolia)" : "SOL Intent Escrow", val: trackingStatus.escrowPda ? `${trackingStatus.escrowPda.slice(0,18)}…` : "—", link: trackingStatus.escrowPda ? (trackingStatus.escrowPda.startsWith("0x") ? `https://sepolia.etherscan.io/address/${trackingStatus.escrowPda}` : `https://explorer.solana.com/address/${trackingStatus.escrowPda}?cluster=devnet`) : null, live: false },
                   { label: "Delivery TX",     val: txId ? `${txId.slice(0,18)}…` : "Pending",            link: explorerUrl || null as string|null, live: isLive },
+                  ...(trackingStatus.deliveredAmount ? [{ label: "Delivered Amount", val: (() => {
+                    const quoted = (intentResult?.bestBid as any)?.outputAmount ?? "";
+                    const actual = trackingStatus.deliveredAmount ?? "";
+                    const toChainLabel = trackingStatus.toChain ?? "";
+                    if (quoted && actual && parseFloat(actual) < parseFloat(quoted) * 0.99) {
+                      return `${actual} ${toChainLabel} (partial — solver balance limited)`;
+                    }
+                    return `${actual} ${toChainLabel} ✓`;
+                  })(), link: null as string|null, live: false }] : []),
                   { label: "Proof Hash",      val: trackingStatus.proofHash ? `${trackingStatus.proofHash.slice(0,18)}…` : "Pending", link: null as string|null, live: false },
                 ].map(row => (
                   <div key={row.label} style={{ display: "flex", justifyContent: "space-between",
@@ -1859,9 +2602,12 @@ export default function App() {
                     {/* FHE Encrypted Intent ID */}
                     <div>
                       <div style={{ fontSize: "10px", fontWeight: 700, color: "#475569", letterSpacing: "1px",
-                        textTransform: "uppercase", marginBottom: "8px" }}>FHE Encrypted Intent ID</div>
+                        textTransform: "uppercase", marginBottom: "8px", display: "flex", alignItems: "center", gap: "8px" }}>
+                        FHE Encrypted Intent ID
+                      </div>
                       <div style={{ display: "flex", alignItems: "center", gap: "8px",
-                        background: `${P}0d`, border: `1px solid ${P}28`,
+                        background: `${P}0d`,
+                        border: `1px solid ${P}28`,
                         borderRadius: "10px", padding: "10px 14px" }}>
                         <span style={{ fontSize: "14px" }}>🔒</span>
                         <span style={{ flex: 1, fontFamily: "'Space Mono', monospace", fontSize: "11px",
@@ -2058,13 +2804,17 @@ export default function App() {
                             </span>
                           )}
                           {trackingStatus.escrowPda && (
-                            <a href={`https://explorer.solana.com/address/${trackingStatus.escrowPda}?cluster=devnet`}
+                            <a href={
+                              trackingStatus.escrowPda.startsWith("0x")
+                                ? `https://sepolia.etherscan.io/address/${trackingStatus.escrowPda}`
+                                : `https://explorer.solana.com/address/${trackingStatus.escrowPda}?cluster=devnet`
+                            }
                               target="_blank" rel="noreferrer"
                               style={{ display: "inline-flex", alignItems: "center", gap: "6px",
                                 background: `${P}10`, border: `1px solid ${P}28`,
                                 color: "#a78bfa", fontWeight: 700, fontSize: "12px",
                                 padding: "8px 16px", borderRadius: "8px", textDecoration: "none" }}>
-                              <span>🔐</span> Verify Escrow PDA ↗
+                              <span>🔐</span> {trackingStatus.escrowPda.startsWith("0x") ? "Verify ETH Escrow on Etherscan ↗" : "Verify SOL Intent Escrow on Explorer ↗"}
                             </a>
                           )}
                         </div>
@@ -2088,7 +2838,7 @@ export default function App() {
             )}
 
             {/* Dispute */}
-            {["settled","delivered","failed"].includes(trackingStatus.status) && (
+            {["settled","delivered","failed","delivery_failed"].includes(trackingStatus.status) && (
               <div style={{ ...card, background: "rgba(239,68,68,0.03)",
                 border: "1px solid rgba(239,68,68,0.14)", animation: "rise 0.4s 0.2s ease both" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
@@ -2143,7 +2893,7 @@ export default function App() {
               </div>
             )}
 
-            {["settled","failed"].includes(trackingStatus.status) && (
+            {["settled","failed","delivery_failed"].includes(trackingStatus.status) && (
               <button onClick={resetApp} className="pri-btn" style={primaryBtn}>New Swap →</button>
             )}
           </div>
@@ -2782,7 +3532,27 @@ export default function App() {
                   {srForwarding ? "Entering Dark Pool…" : `🫧 Drop ${srBalance.balance.toFixed(4)} ${srTabChain} →`}
                 </button>
               )}
-              {step === "tracking" && trackingStatus && ["settled","failed"].includes(trackingStatus.status) && (
+              {step === "tracking" && trackingStatus?.status === "failed" && fromChain === "SOL" && (
+                <button onClick={handleRefund} disabled={refunding} className="pri-btn" style={{
+                  ...primaryBtn, background: "rgba(124,58,237,0.15)",
+                  border: "1px solid rgba(124,58,237,0.4)", color: "#a78bfa",
+                }}>
+                  {refunding ? "Requesting Refund…" : "↩ Refund Escrow"}
+                </button>
+              )}
+              {step === "tracking" && refundResult?.sig && (
+                <div style={{ fontSize: "10px", color: "#14f195", padding: "6px 10px",
+                  background: "rgba(20,241,149,0.07)", borderRadius: "8px", wordBreak: "break-all" }}>
+                  Refunded ✓ sig: {refundResult.sig.slice(0, 20)}…
+                </div>
+              )}
+              {step === "tracking" && refundResult?.error && (
+                <div style={{ fontSize: "10px", color: "#f87171", padding: "6px 10px",
+                  background: "rgba(239,68,68,0.07)", borderRadius: "8px" }}>
+                  Refund failed: {refundResult.error.slice(0, 80)}
+                </div>
+              )}
+              {step === "tracking" && trackingStatus && ["settled","failed","delivery_failed","refunded"].includes(trackingStatus.status) && (
                 <button onClick={resetApp} className="pri-btn" style={primaryBtn}>New Swap →</button>
               )}
             </div>

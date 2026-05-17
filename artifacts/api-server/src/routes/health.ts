@@ -28,11 +28,12 @@ router.get("/healthz/integrations", async (_req, res) => {
       sentinelPubkey: SENTINEL_PUBKEY_HEX,
       network: "solana-devnet",
       sdk: "@ika.xyz/pre-alpha-solana-client",
-      dkgRetries: 3,
+      dkgMaxRetries: 8,
+      signMaxRetries: 6,
       features: ["DKG", "presign", "co-sign", "policy-gate", "multi-chain-native-address"],
       note: ikaProbe.reachable
         ? "Ika MPC live — DKG mode: devnet. No bridge needed."
-        : "Ika gRPC currently unreachable. DKG will retry 3x per request before sim fallback.",
+        : "Ika gRPC currently unreachable. DKG retries up to 8x with exponential backoff. No sim fallback — throws on exhaustion.",
     },
     encrypt: {
       status: "configured",

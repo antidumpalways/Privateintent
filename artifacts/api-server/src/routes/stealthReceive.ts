@@ -22,6 +22,7 @@ import { intentsTable }                   from "@workspace/db/schema";
 import { encryptAuditLog, generateViewingKey } from "../services/encrypt.js";
 import { getSolverBids, getBestBid, type SolverBid } from "../services/solverEngine.js";
 import { aiSolverAgent }                  from "../services/aiSolverAgent.js";
+import { getCustomSolverBids }            from "../services/customSolverRegistry.js";
 import { getRateSync }                    from "../services/liveRates.js";
 import { orderBook, sealedId, type DPOrder } from "./darkpool.js";
 
@@ -332,7 +333,9 @@ router.post("/stealth/receive/forward", async (req, res) => {
       } catch (sponsorErr) {
         console.warn("[stealth/forward] gas sponsor skipped:", (sponsorErr as Error).message);
       }
-      adjustedAmt = amtNum - sponsorSol;
+      // adjustedAmt stays as amtNum — the sponsored gas is a fee donation to the stealth
+      // address, not a deduction from the forwarded amount.
+      void sponsorSol;
     }
   } catch (balanceErr) {
     console.error("[stealth/forward] balance pre-check error:", (balanceErr as Error).message);
@@ -421,22 +424,18 @@ async function processDarkPoolEntry(stealthAddress: string, entry: StealthEntry)
       timestamp: Date.now(),
     });
 
-    let encryptedIntentId   = `enc_dp_${randomBytes(16).toString("hex")}`;
-    let encryptedIntentHash = createHash("sha256").update(intentPayload).digest("hex");
-    let encryptMode         = "devnet";
-
-    try {
-      const encrypted = await encryptAuditLog({
-        event: "dark_pool_forward_intent",
-        data:  intentPayload,
-        walletAddress: ownerPhantomPubkey,
-      });
-      encryptedIntentId   = encrypted.onChainId            ?? encryptedIntentId;
-      encryptedIntentHash = encrypted.encrypted?.slice(0, 64) ?? encryptedIntentHash;
-      encryptMode         = encrypted.mode                  ?? "devnet";
-    } catch (e) {
-      console.warn("[dark_pool/process] FHE encrypt warn:", (e as Error).message);
+    // Encrypt FHE — hard fail: dark pool entry cannot proceed without on-chain sealing
+    const encrypted = await encryptAuditLog({
+      event: "dark_pool_forward_intent",
+      data:  intentPayload,
+      walletAddress: ownerPhantomPubkey,
+    });
+    if (!encrypted.onChainId) {
+      throw new Error("Encrypt FHE returned no onChainId — dark pool entry aborted");
     }
+    const encryptedIntentId   = encrypted.onChainId;
+    const encryptedIntentHash = encrypted.encrypted.slice(0, 64);
+    const encryptMode         = "devnet" as const;
 
     // Solver blind auction
     const intentParams = {
@@ -444,33 +443,21 @@ async function processDarkPoolEntry(stealthAddress: string, entry: StealthEntry)
       fromToken: chainLabel, toToken: chainLabel,
       amount: String(adjustedAmt),
     };
-    const staticBids = getSolverBids(intentParams);
-    const aiBid      = await aiSolverAgent.computeBid(intentParams, staticBids).catch(() => null);
-    const allBids    = [...staticBids, ...(aiBid ? [aiBid] : [])].sort(
-      (a, b) => parseFloat(b.outputAmount) - parseFloat(a.outputAmount),
-    );
+    const staticBids   = getSolverBids(intentParams);
+    const [aiBid, customBids] = await Promise.all([
+      aiSolverAgent.computeBid(intentParams, staticBids).catch(() => null),
+      Promise.resolve(getCustomSolverBids({ fromChain: chainLabel, toChain: chainLabel, fromToken: chainLabel, toToken: chainLabel, amount: String(adjustedAmt) })),
+    ]);
+    const allBids    = [
+      ...(aiBid ? [aiBid] : []),
+      ...customBids,
+    ].sort((a, b) => parseFloat(b.outputAmount) - parseFloat(a.outputAmount));
 
-    const finalBids: SolverBid[] = allBids.length > 0 ? allBids : [{
-      solverId: "solver-alpha", solverName: "Aggressive Solver",
-      solverDescription: `Dark Pool → ${chainLabel} delivery via solver pool`,
-      solverStrategy: "aggressive" as const,
-      fromChain: chainLabel, toChain: chainLabel,
-      fromToken: chainLabel, toToken: chainLabel,
-      inputAmount:  adjustedAmt.toFixed(6),
-      outputAmount: (adjustedAmt * 0.9982).toFixed(6),
-      feePercent: 0.18,
-      feeAmount:  (adjustedAmt * 0.0018).toFixed(6),
-      estimatedSeconds: isEth ? 20 : 15,
-      expiresAt:  Date.now() + 120_000,
-      reputationScore: 97,
-      sla: "Best-effort 15-30s",
-      erc7683Compliant: true,
-      chainDetails: {
-        network: networkLabel,
-        explorerUrl: isEth ? "https://sepolia.etherscan.io" : "https://explorer.solana.com/?cluster=devnet",
-        nativeSign: isEth ? "secp256k1 ECDSA (Ethereum Sepolia)" : "Ika Curve25519 EddsaSha512",
-      },
-    }];
+    if (allBids.length === 0) {
+      throw new Error(`No real solvers available for dark pool route ${chainLabel}→${chainLabel}. Live Solver and AI Solver must be registered and funded.`);
+    }
+
+    const finalBids: SolverBid[] = allBids;
 
     const bestBid    = getBestBid(finalBids) ?? finalBids[0]!;
     const viewingKey = generateViewingKey();

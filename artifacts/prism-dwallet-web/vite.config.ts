@@ -56,6 +56,9 @@ export default defineConfig({
     strictPort: true,
     host: "0.0.0.0",
     allowedHosts: true,
+    headers: {
+      "X-Robots-Tag": "index, follow",
+    },
     fs: {
       strict: true,
     },

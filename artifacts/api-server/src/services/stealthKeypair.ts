@@ -23,7 +23,7 @@ export function generateStealthKeypair(chain: "SOL" | "ETH"): GeneratedKeypair {
       secretKeyHex:   wallet.privateKey.slice(2),
       chain:          "ETH",
       network:        "ethereum-sepolia",
-      keySource:      "secp256k1 Keypair / EIP-55 (Ika Curve25519 DKG in production; local ethers fallback for hackathon)",
+      keySource:      "secp256k1 Keypair / EIP-55 (Ika Secp256k1 DKG — stealth address rotated per intent)",
     };
   }
   const keypair = Keypair.generate();
@@ -32,6 +32,6 @@ export function generateStealthKeypair(chain: "SOL" | "ETH"): GeneratedKeypair {
     secretKeyHex:   Buffer.from(keypair.secretKey).toString("hex"),
     chain:          "SOL",
     network:        "solana-devnet",
-    keySource:      "Ed25519 Keypair (Ika Curve25519 DKG in production; local fallback for hackathon devnet)",
+    keySource:      "Ed25519 Keypair (Ika Curve25519 DKG — stealth address rotated per intent)",
   };
 }

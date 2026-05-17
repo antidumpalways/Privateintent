@@ -22,6 +22,7 @@
 
 import { Router } from "express";
 import { createHash, randomBytes } from "crypto";
+import { ethers } from "ethers";
 import { db } from "@workspace/db";
 import { intentsTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
@@ -35,7 +36,7 @@ import {
   signAndBroadcastBtcTx,
   signAndBroadcastSolTx,
 } from "../services/nativeSigner.js";
-import { executeLiveDelivery, LIVE_SOLVER_ID, getLiveSolverAddresses } from "../services/liveSolverService.js";
+import { executeLiveDelivery, lockEthEscrow, releaseFromEscrowContract, checkEthDepositOnChain, getEscrowContractAddress, LIVE_SOLVER_ID, getLiveSolverAddresses, checkSolverCanFulfill, getLiveSolverCapacity } from "../services/liveSolverService.js";
 import { db as dbDirect } from "@workspace/db";
 import { nativeWalletsTable } from "@workspace/db/schema";
 import {
@@ -46,6 +47,13 @@ import {
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import { getSentinelKeypair, SOLANA_DEVNET_RPC } from "../services/solanaBroadcast.js";
+import {
+  getSolIntentEscrowAddress,
+  getSolEscrowPda,
+  releaseSolEscrow,
+  buildRefundInstructionParams,
+} from "../services/solEscrowService.js";
+import { SOL_ESCROW_PROGRAM_ID } from "../services/solEscrowProgramId.js";
 
 const router = Router();
 
@@ -70,7 +78,7 @@ function buildCrossChainOrder(params: {
     version: "1.0",
     orderDataType: "PrivateSwapOrder",
     initiator: "SEALED (Encrypt FHE — not visible to solvers)",
-    originChainId: "solana-devnet",
+    originChainId: chainToNetworkId(params.fromChain),
     inputToken: params.fromToken,
     inputAmount: "SEALED (Encrypt FHE — MEV shield)",
     outputToken: params.toToken,
@@ -118,9 +126,9 @@ function buildResolvedOrder(params: {
     maxSpent: [{
       token: params.fromToken,
       amount: params.inputAmount,
-      chainId: "solana-devnet",
+      chainId: chainToNetworkId(params.fromChain),
       recipient: params.escrowPda,
-      note: "Locked in Anchor escrow PDA — released only after proof",
+      note: "Locked in escrow — released only after delivery proof",
     }],
     minReceived: [{
       token: params.toToken,
@@ -146,22 +154,117 @@ function chainToNetworkId(chain: string): string {
   return map[chain] ?? chain.toLowerCase();
 }
 
+const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC ?? "https://ethereum-sepolia-rpc.publicnode.com";
+
 // ── GET /api/escrow/config ─────────────────────────────────────────────────────
-// Returns sentinel pubkey so frontend can send SOL to it as escrow
 router.get("/escrow/config", (_req, res) => {
   const sentinel = getSentinelKeypair();
+  const { eth: ethSolverAddress } = getLiveSolverAddresses();
+  const ethEscrowContract = getEscrowContractAddress();
   res.json({
     escrowPubkey: sentinel.publicKey.toBase58(),
     rpcUrl: SOLANA_DEVNET_RPC,
     network: "solana-devnet",
-    note: "Send SOL here to lock escrow. Sentinel releases to solver after delivery proof.",
+    ethEscrowContract,
+    ethEscrowAddress: ethSolverAddress,
+    solEscrowProgramId: SOL_ESCROW_PROGRAM_ID,
+    solEscrowType: "pda",
+    solEscrowNote: "PDA mode: escrow account is program-owned PDA derived from [escrow, intentId_le8]",
+    note: "SOL: fetch per-intent escrow address from GET /api/intent/:id/sol-escrow. ETH: call createIntent() on ethEscrowContract via calldata from /api/escrow/prepare-tx.",
+  });
+});
+
+// ── GET /api/escrow/prepare-tx ────────────────────────────────────────────────
+// Returns ABI-encoded calldata for createIntent() on the real PrivateIntentEscrow
+// contract, plus the predicted on-chain intentId (nextIntentId snapshot).
+// Frontend uses the returned calldata in eth_sendTransaction via Phantom.
+router.get("/escrow/prepare-tx", async (req, res) => {
+  try {
+    const { dbIntentId } = req.query as { dbIntentId?: string };
+    if (!dbIntentId) return res.status(400).json({ error: "dbIntentId query param required" });
+
+    const id = parseInt(dbIntentId, 10);
+    const [row] = await db.select().from(intentsTable).where(eq(intentsTable.id, id)).limit(1);
+    if (!row) return res.status(404).json({ error: "Intent not found" });
+
+    const contractAddress = getEscrowContractAddress();
+    const provider = new ethers.JsonRpcProvider(SEPOLIA_RPC_URL);
+
+    // Read nextIntentId from contract to predict the on-chain id we'll get
+    const escrowIface = new ethers.Interface([
+      "function nextIntentId() view returns (uint256)",
+      "function createIntent(string,string,string,string,uint256,string) payable returns (uint256)",
+    ]);
+    const contract = new ethers.Contract(contractAddress, escrowIface, provider);
+    let predictedOnchainId = 0;
+    try {
+      const next = await contract.nextIntentId();
+      predictedOnchainId = Number(next);
+    } catch { /* non-critical — frontend still needs calldata */ }
+
+    // ABI-encode createIntent(fromChain,toChain,fromToken,toToken,releaseAfter,proofHash)
+    // proofHash must be a real on-chain identifier — never a synthetic fallback.
+    const proofHash = row.proofHash ?? row.encryptedIntentId;
+    if (!proofHash) {
+      return res.status(400).json({
+        error: "No on-chain proofHash stored for this intent. Intent must be submitted first so an Encrypt FHE ID is generated.",
+        intentId: id,
+      });
+    }
+    const calldata = escrowIface.encodeFunctionData("createIntent", [
+      row.fromChain, row.toChain, row.fromToken, row.toToken,
+      0n, // releaseAfter=0 (no timelock)
+      proofHash,
+    ]);
+
+    return res.json({ calldata, contractAddress, predictedOnchainId });
+  } catch (err) {
+    return res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ── GET /api/intent/:id/sol-escrow ────────────────────────────────────────────
+// Returns the unique per-intent SOL escrow address for this intentId.
+// Frontend sends SOL here instead of the shared sentinel pubkey.
+router.get("/intent/:id/sol-escrow", (req, res) => {
+  const intentId = parseInt(req.params.id, 10);
+  if (!intentId || isNaN(intentId) || intentId <= 0) {
+    return res.status(400).json({ error: "Invalid intentId" });
+  }
+  const address = getSolIntentEscrowAddress(intentId);
+  return res.json({
+    intentId,
+    escrowAddress: address,
+    explorerUrl: `https://explorer.solana.com/address/${address}?cluster=devnet`,
+    type: "pda",
+    solEscrowType: "pda",  // alias used by the frontend deposit flow
+    programId: SOL_ESCROW_PROGRAM_ID,
+    note: "Unique SOL escrow account derived per intent. Only the operator can release funds after delivery.",
+  });
+});
+
+// ── GET /api/intent/:id/refund-tx ─────────────────────────────────────────────
+// Returns the pre-serialized Anchor `refund` instruction data for the user to
+// sign via Phantom. The API server cannot sign refunds — the program requires
+// the original depositor as a signer. Frontend replaces DEPOSITOR_PUBKEY.
+router.get("/intent/:id/refund-tx", (req, res) => {
+  const intentId = parseInt(req.params.id, 10);
+  if (!intentId || isNaN(intentId) || intentId <= 0) {
+    return res.status(400).json({ error: "Invalid intentId" });
+  }
+  const params = buildRefundInstructionParams(intentId);
+  return res.json({
+    intentId,
+    ...params,
+    rpcUrl: SOLANA_DEVNET_RPC,
+    usage: "Replace DEPOSITOR_PUBKEY with user's pubkey, sign tx via Phantom, send to Solana devnet.",
   });
 });
 
 // ── GET /api/intent/solvers ────────────────────────────────────────────────────
 router.get("/intent/solvers", (_req, res) => {
   const solvers = getAllSolvers();
-  res.json({ solvers, count: solvers.length, standard: "ERC-7683-Inspired" });
+  return res.json({ solvers, count: solvers.length, standard: "ERC-7683-Inspired" });
 });
 
 // ── GET /api/intent/history ────────────────────────────────────────────────────
@@ -206,9 +309,9 @@ router.get("/intent/history", async (_req, res) => {
       };
     });
 
-    res.json({ history, count: history.length, privacyMode: "fhe-sealed" });
+    return res.json({ history, count: history.length, privacyMode: "fhe-sealed" });
   } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
+    return res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -271,9 +374,9 @@ router.post("/intent/submit", async (req, res) => {
       timestamp: Date.now(),
     });
 
-    let encryptedIntentId = `enc_${randomBytes(16).toString("hex")}`;
-    let encryptedIntentHash = createHash("sha256").update(intentPayload).digest("hex");
-    let encryptMode = "devnet";
+    let encryptedIntentId: string;
+    let encryptedIntentHash: string;
+    const encryptMode = "devnet";
 
     try {
       const encrypted = await encryptAuditLog({
@@ -281,11 +384,18 @@ router.post("/intent/submit", async (req, res) => {
         data: intentPayload,
         walletAddress: phantomPubkey,
       });
-      encryptedIntentId = encrypted.onChainId ?? encryptedIntentId;
-      encryptedIntentHash = (encrypted as any).encryptedPayload?.slice(0, 64) ?? encryptedIntentHash;
-      encryptMode = (encrypted as any).encryptMode ?? "devnet";
+      if (!encrypted.onChainId) {
+        throw new Error("Encrypt FHE returned no onChainId — on-chain sealing incomplete");
+      }
+      encryptedIntentId = encrypted.onChainId;
+      encryptedIntentHash = encrypted.encrypted.slice(0, 64);
     } catch (e) {
-      console.warn("[intent/submit] FHE encrypt warn:", (e as Error).message);
+      const msg = (e as Error).message ?? String(e);
+      process.stderr.write(`[intent/submit] Encrypt FHE offline — aborting intent creation. Error: ${msg}\n`);
+      return res.status(503).json({
+        error: "Encrypt FHE offline — intent cannot be sealed. Retry when the Encrypt network is reachable.",
+        detail: msg,
+      });
     }
 
     // 2. Collect solver bids in parallel (solvers bid BLIND — see route only, not amounts)
@@ -302,10 +412,44 @@ router.post("/intent/submit", async (req, res) => {
       Promise.resolve(getCustomSolverBids({ fromChain, toChain, fromToken, toToken, amount })),
     ]);
 
+    // ── Honest bidding: cap live solver bid to actual deliverable inventory ──────
+    // Fetch solver capacity in parallel with bid collection (already done above).
+    // For cross-chain swaps, the live solver must quote what it can ACTUALLY deliver,
+    // not a theoretical market rate. This prevents over-quoting that leads to
+    // partial deliveries and stuck intents.
+    let liveSolverCap: { sol: { maxDeliverable: number; status: string }; eth: { maxDeliverable: number; status: string } } | null = null;
+    try {
+      if (["SOL","ETH","BASE","ARB"].includes(toChain) && ["SOL","ETH","BASE","ARB"].includes(fromChain) && fromChain !== toChain) {
+        liveSolverCap = await getLiveSolverCapacity();
+      }
+    } catch { /* non-fatal: cap stays null, bid used as-is */ }
+
+    const cappedCustomBids = customBids.map((bid: any) => {
+      if (!liveSolverCap) return bid;
+      const isLiveBid = bid.solverId === LIVE_SOLVER_ID || bid.solverId?.startsWith("live-solver") || bid.solverName?.includes("Live Solver");
+      if (!isLiveBid) return bid;
+
+      const quoted = parseFloat(bid.outputAmount);
+      let maxDeliverable: number;
+      if (toChain === "SOL") maxDeliverable = liveSolverCap.sol.maxDeliverable;
+      else if (["ETH","BASE","ARB"].includes(toChain)) maxDeliverable = liveSolverCap.eth.maxDeliverable;
+      else return bid; // unsupported chain — no cap
+
+      if (maxDeliverable <= 0) {
+        process.stderr.write(`[Intent/bid] Live solver inventory critical for ${toChain} — omitting from bid pool\n`);
+        return null; // will filter below
+      }
+      if (quoted > maxDeliverable) {
+        const capped = maxDeliverable.toFixed(6);
+        process.stdout.write(`[Intent/bid] Live solver bid capped ${quoted.toFixed(6)} → ${capped} ${toChain} (inventory limit)\n`);
+        return { ...bid, outputAmount: capped, solverDescription: `${bid.solverDescription ?? ""} [inventory-capped: max ${capped} ${toChain}]`.trim() };
+      }
+      return bid;
+    }).filter(Boolean);
+
     const allBids = [
-      ...staticBids,
       ...(aiBid ? [aiBid] : []),
-      ...customBids,
+      ...cappedCustomBids,
     ].sort((a, b) => parseFloat(b.outputAmount) - parseFloat(a.outputAmount));
 
     if (allBids.length === 0) {
@@ -344,7 +488,7 @@ router.post("/intent/submit", async (req, res) => {
 
     // Log intent submission for demo visibility
     const bestBid = getBestBid(allBids);
-    const aiLabel = aiBid !== null ? `${staticBids.length}+1AI` : `${staticBids.length}`;
+    const aiLabel = `${allBids.length}total(${aiBid !== null ? "1AI+" : ""}${cappedCustomBids.length}custom)`;
     process.stdout.write(
       `[Intent]  SUBMIT  intentId=${row!.id} | phantom=${phantomPubkey.slice(0, 8)}… | ${fromChain}→${toChain} ${fromToken}→${toToken} | amt=${amount} | FHE=${encryptMode} | encId=${encryptedIntentId.slice(0, 14)}…\n`
     );
@@ -363,7 +507,7 @@ router.post("/intent/submit", async (req, res) => {
       fillDeadline: deadline.toISOString(),
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       intentId: row!.id,
       status: "bidding",
       encryptedIntentId,
@@ -384,7 +528,7 @@ router.post("/intent/submit", async (req, res) => {
     });
   } catch (err) {
     console.error("[intent/submit]", err);
-    res.status(500).json({ error: (err as Error).message });
+    return res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -397,7 +541,7 @@ router.get("/intent/:id", async (req, res) => {
     const [row] = await db.select().from(intentsTable).where(eq(intentsTable.id, id)).limit(1);
     if (!row) return res.status(404).json({ error: "Intent not found" });
 
-    res.json({
+    return res.json({
       intentId: row.id,
       status: row.status,
       fromChain: row.fromChain,
@@ -412,6 +556,8 @@ router.get("/intent/:id", async (req, res) => {
       bids: row.solverBids,
       sourceTxId: row.sourceTxId,
       deliveryTxId: row.deliveryTxId,
+      deliveryError: row.deliveryError ?? null,
+      deliveredAmount: row.deliveredAmount ?? null,
       proofHash: row.proofHash,
       escrowPda: row.escrowPda,
       deadline: row.deadline,
@@ -421,7 +567,7 @@ router.get("/intent/:id", async (req, res) => {
       standard: "ERC-7683-Inspired",
     });
   } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
+    return res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -448,12 +594,161 @@ router.post("/intent/accept", async (req, res) => {
     const winningBid = bids.find((b: any) => b.solverId === solverId);
     if (!winningBid) return res.status(404).json({ error: "Solver bid not found" });
 
-    // Escrow = sentinel pubkey yang nyata (SOL dikirim dari Phantom ke sini via tx frontend)
-    const sentinel = getSentinelKeypair();
-    const escrowPda = sentinel.publicKey.toBase58();
-    const proofHash = createHash("sha256")
-      .update(`${intentId}:${solverId}:${Date.now()}`)
-      .digest("hex");
+    // ── Solver inventory pre-check ─────────────────────────────────────────────
+    // Verify solver has sufficient funds to fulfill BEFORE locking user's escrow.
+    // If solver can't deliver, reject early so user's funds are never committed.
+    {
+      const toChain = row.toChain as string;
+      const fulfillCheck = await checkSolverCanFulfill(toChain, winningBid.outputAmount);
+      if (!fulfillCheck.ok) {
+        const isCheckError = fulfillCheck.available === "check_error" || fulfillCheck.available === "unsupported_chain";
+        if (isCheckError) {
+          // RPC/connectivity failure — cannot verify inventory. Refuse to lock escrow
+          // (fail closed). Return 503 so client can retry after connectivity restores.
+          process.stderr.write(
+            `[Intent/accept] ABORT intentId=${row.id} inventory_check_unavailable (${fulfillCheck.available}): refusing escrow lock until solver RPC is reachable\n`
+          );
+          return res.status(503).json({
+            error: "solver_inventory_check_unavailable",
+            message: "Cannot verify solver liquidity right now (RPC error). Your funds have NOT been committed. Please retry in a moment.",
+            available: fulfillCheck.available,
+          });
+        }
+        process.stderr.write(
+          `[Intent/accept] REJECT intentId=${row.id} solver_insufficient_inventory: need ${fulfillCheck.required} ${toChain}, have ${fulfillCheck.available} ${toChain}\n`
+        );
+        return res.status(409).json({
+          error: "solver_insufficient_inventory",
+          message: `Solver cannot fulfill this swap. Available: ${fulfillCheck.available} ${toChain}, required: ${fulfillCheck.required} ${toChain}. Shortfall: ${fulfillCheck.shortfall ?? "?"} ${toChain}.`,
+          available: fulfillCheck.available,
+          required: fulfillCheck.required,
+          shortfall: fulfillCheck.shortfall,
+          hint: toChain === "SOL"
+            ? "Top up solver SOL wallet at https://faucet.solana.com or reduce swap amount."
+            : `Top up solver ETH wallet on ${toChain} Sepolia or reduce swap amount.`,
+        });
+      }
+      process.stdout.write(
+        `[Intent/accept] inventory OK intentId=${row.id} available=${fulfillCheck.available} ${toChain} >= required=${fulfillCheck.required} ${toChain}\n`
+      );
+    }
+
+    // Determine escrow address and, for ETH origins, lock ETH server-side
+    const fromChain = row.fromChain ?? "SOL";
+    const isEthOrigin = ["ETH", "BASE", "ARB"].includes(fromChain);
+
+    let escrowPda: string;
+    let resolvedSourceTxId = sourceTxId ?? null;
+
+    let resolvedOnchainIntentId: number | undefined;
+
+    if (isEthOrigin) {
+      if (resolvedSourceTxId) {
+        // ETH origin: user signed createIntent() via Phantom.
+        // 1. Wait for TX receipt and verify it succeeded.
+        // 2. Parse IntentCreated event to extract the on-chain intentId.
+        // 3. Verify deposit via getIntent(onchainIntentId).
+        process.stdout.write(`[Intent]  ETH-deposit verifying dbId=${intentId} tx=${resolvedSourceTxId.slice(0, 14)}…\n`);
+
+        const provider = new ethers.JsonRpcProvider(SEPOLIA_RPC_URL);
+        const escrowIface = new ethers.Interface([
+          "event IntentCreated(uint256 indexed intentId, address indexed user, uint256 amount, string fromChain, string toChain, string fromToken, string toToken, uint256 releaseAfter)",
+        ]);
+
+        // Poll for receipt (TX may still be pending when accept is called)
+        let receipt: any = null;
+        const receiptDeadline = Date.now() + 60_000; // wait up to 60s for confirmation
+        while (Date.now() < receiptDeadline && !receipt) {
+          receipt = await provider.getTransactionReceipt(resolvedSourceTxId).catch(() => null);
+          if (!receipt) await new Promise<void>(r => setTimeout(r, 4_000));
+        }
+
+        if (!receipt) {
+          return res.status(400).json({ error: "ETH deposit TX not confirmed after 60s. Check Sepolia Etherscan and retry." });
+        }
+        if (receipt.status !== 1) {
+          return res.status(400).json({
+            error: `ETH deposit TX reverted on-chain (status ${receipt.status}). Check https://sepolia.etherscan.io/tx/${resolvedSourceTxId} — the createIntent() call may have failed. Try submitting a new swap.`,
+          });
+        }
+
+        // Parse IntentCreated event from receipt logs
+        for (const log of receipt.logs) {
+          try {
+            const parsed = escrowIface.parseLog({ topics: [...log.topics], data: log.data });
+            if (parsed?.name === "IntentCreated") {
+              resolvedOnchainIntentId = Number(parsed.args.intentId);
+              break;
+            }
+          } catch { /* skip non-matching logs */ }
+        }
+
+        if (!resolvedOnchainIntentId) {
+          // Fallback: TX went to contract but no IntentCreated event — verify by raw value
+          process.stdout.write(`[Intent]  ETH-deposit IntentCreated event not found in receipt — using receipt fallback\n`);
+        }
+
+        process.stdout.write(`[Intent]  ETH-deposit TX confirmed. onchainIntentId=${resolvedOnchainIntentId ?? "?"} tx=${resolvedSourceTxId.slice(0, 14)}…\n`);
+
+        // Verify deposit amount via contract (uses onchainIntentId if available)
+        const dep = await checkEthDepositOnChain(
+          resolvedOnchainIntentId ?? intentId,
+          15_000,
+          resolvedSourceTxId,
+        );
+        if (!dep) {
+          return res.status(400).json({
+            error: "ETH deposit not found on-chain after 15s. Ensure the Phantom transaction was submitted and confirmed, then retry.",
+          });
+        }
+
+        let requiredWei: bigint;
+        try { requiredWei = ethers.parseEther(row.amount ?? "0"); }
+        catch { requiredWei = 0n; }
+        const tolerance = requiredWei * 995n / 1000n;
+        if (requiredWei > 0n && dep.amount < tolerance) {
+          return res.status(400).json({
+            error: `ETH deposit underfunded: on-chain amount ${ethers.formatEther(dep.amount)} ETH is less than required ${row.amount} ETH (99.5% minimum).`,
+          });
+        }
+
+        escrowPda = getEscrowContractAddress();
+        process.stdout.write(`[Intent]  ETH-escrow deposit CONFIRMED dbId=${intentId} onchainId=${resolvedOnchainIntentId ?? "?"} onChain=${ethers.formatEther(dep.amount)} ETH required=${row.amount} ETH\n`);
+      } else {
+        // No browser-signed tx — server-side deposit path
+        const ethEscrow = await lockEthEscrow(row.amount, intentId, {
+          fromChain: row.fromChain, toChain: row.toChain,
+          fromToken: row.fromToken, toToken: row.toToken,
+          proofHash: row.encryptedIntentId ?? undefined,
+        }).catch(e => ({
+          success: false, txHash: "", escrowAddress: "", explorerUrl: "",
+          onchainIntentId: undefined, error: (e as Error).message,
+        }));
+        if (ethEscrow.success) {
+          resolvedSourceTxId = ethEscrow.txHash;
+          escrowPda = ethEscrow.escrowAddress;
+          resolvedOnchainIntentId = ethEscrow.onchainIntentId;
+          process.stdout.write(`[Intent]  ETH-escrow server-lock OK dbId=${intentId} onchainId=${resolvedOnchainIntentId ?? "?"} tx=${ethEscrow.txHash.slice(0, 18)}…\n`);
+        } else {
+          return res.status(503).json({
+            error: `ETH escrow lock failed: ${ethEscrow.error}. Provide a browser-signed deposit tx via Phantom.`,
+          });
+        }
+      }
+    } else {
+      // SOL origin: SOL was already locked by the frontend Phantom tx into the per-intent escrow account
+      escrowPda = getSolIntentEscrowAddress(intentId);
+    }
+
+    // Use the real on-chain FHE ID as the pre-delivery proof anchor.
+    // If encryptedIntentId is missing the intent was never sealed — hard-fail.
+    // After delivery, proofHash is overwritten with the real delivery tx hash in executeDelivery().
+    if (!row.encryptedIntentId) {
+      return res.status(503).json({
+        error: "Intent has no FHE on-chain ID — cannot seal accept proof. Re-submit the intent to generate a real Encrypt ID.",
+      });
+    }
+    const proofHash = row.encryptedIntentId;
 
     await db
       .update(intentsTable)
@@ -461,8 +756,9 @@ router.post("/intent/accept", async (req, res) => {
         status: "accepted",
         winningSolverId: solverId,
         escrowPda,
-        sourceTxId: sourceTxId ?? null,
+        sourceTxId: resolvedSourceTxId,
         proofHash,
+        onchainIntentId: resolvedOnchainIntentId != null ? String(resolvedOnchainIntentId) : null,
         dwalletId: dwalletId ?? row.dwalletId,
         updatedAt: new Date(),
       })
@@ -505,15 +801,24 @@ router.post("/intent/accept", async (req, res) => {
       console.error("[intent/accept] delivery error:", e)
     );
 
-    res.json({
+    const sourceTxExplorer = resolvedSourceTxId
+      ? isEthOrigin
+        ? `https://sepolia.etherscan.io/tx/${resolvedSourceTxId}`
+        : `https://explorer.solana.com/tx/${resolvedSourceTxId}?cluster=devnet`
+      : null;
+
+    const escrowNetwork = isEthOrigin ? "ETH Sepolia" : "Solana Devnet";
+    const escrowNote = `${fromChain} locked in ${escrowNetwork} escrow (${escrowPda.slice(0, 8)}…). Released to solver after delivery proof.`;
+
+    return res.json({
       intentId,
       status: "accepted",
       solverId,
       solverName: winningBid.solverName,
       escrowPda,
-      escrowNote: `SOL dikunci di sentinel escrow (${escrowPda.slice(0, 8)}…). Release ke solver setelah bukti pengiriman.`,
-      sourceTxId: sourceTxId ?? null,
-      sourceTxExplorer: sourceTxId ? `https://explorer.solana.com/tx/${sourceTxId}?cluster=devnet` : null,
+      escrowNote,
+      sourceTxId: resolvedSourceTxId,
+      sourceTxExplorer,
       expectedDelivery: new Date(Date.now() + winningBid.estimatedSeconds * 1000).toISOString(),
       winningBid,
       standard: "ERC-7683-Inspired",
@@ -523,7 +828,7 @@ router.post("/intent/accept", async (req, res) => {
     });
   } catch (err) {
     console.error("[intent/accept]", err);
-    res.status(500).json({ error: (err as Error).message });
+    return res.status(500).json({ error: (err as Error).message });
   }
 });
 
@@ -572,6 +877,7 @@ async function executeDelivery(intentId: number, bid: any, intent: any) {
     let deliveryTxId = "";
     let deliveryExplorerUrl = "";
     let isLiveDelivery = false;
+    let deliveryActualAmount: string | undefined;
     const toChain = bid.toChain as string;
     const isLiveSolver = bid.solverId?.includes("live-solver") || bid.solverName?.includes("Live Solver");
 
@@ -580,6 +886,17 @@ async function executeDelivery(intentId: number, bid: any, intent: any) {
     // delivery uses the live solver's funded testnet wallet.
     {
       const destAddr = intent.destinationAddress || getUserDest(toChain);
+
+      // Hard-fail if no valid destination address — never silently deliver to wrong address
+      if (!destAddr) {
+        const errMsg = `No destination address for ${toChain}. Check intent.destinationAddress or user dWallet.`;
+        process.stderr.write(`[delivery] ABORT intentId=${intentId}: ${errMsg}\n`);
+        await db
+          .update(intentsTable)
+          .set({ status: "delivery_failed", deliveryError: errMsg, updatedAt: new Date() })
+          .where(eq(intentsTable.id, intentId));
+        return;
+      }
       const result = await executeLiveDelivery({
         toChain,
         destinationAddress: destAddr,
@@ -590,21 +907,81 @@ async function executeDelivery(intentId: number, bid: any, intent: any) {
         deliveryTxId = result.txHash;
         deliveryExplorerUrl = result.explorerUrl;
         isLiveDelivery = true;
-        process.stdout.write(`[delivery/live] REAL tx success txHash=${deliveryTxId.slice(0, 18)}… explorer=${deliveryExplorerUrl}\n`);
+        deliveryActualAmount = result.amount; // actual amount delivered (may differ from quoted)
+        process.stdout.write(`[delivery/live] REAL tx success txHash=${deliveryTxId.slice(0, 18)}… explorer=${deliveryExplorerUrl} actual=${deliveryActualAmount} ${result.unit ?? ""}\n`);
+
+        // Release the locked escrow to the solver after delivery.
+        // ETH: call release() on the PrivateIntentEscrow contract (polls up to 120s for deposit).
+        // SOL: send Anchor `release` instruction to the per-intent PDA (operator-signed).
+        // Settlement is GATED on release success.
+        const fromChainLabel = (bid.fromChain ?? intent.fromChain ?? "SOL") as string;
+        let escrowReleaseOk = true;
+
+        if (["ETH", "BASE", "ARB"].includes(fromChainLabel)) {
+          const solverEthAddress = getLiveSolverAddresses().eth;
+          // Re-read DB for onchainIntentId (set during accept after parsing IntentCreated event)
+          const [freshRow] = await db.select().from(intentsTable).where(eq(intentsTable.id, intentId)).limit(1);
+          const onchainIntentId = freshRow?.onchainIntentId ? Number(freshRow.onchainIntentId) : undefined;
+          const releaseResult = await releaseFromEscrowContract(intentId, solverEthAddress, deliveryTxId, onchainIntentId);
+          escrowReleaseOk = releaseResult.success;
+          if (releaseResult.success) {
+            process.stdout.write(`[delivery/live] ETH escrow released intentId=${intentId} onchainId=${onchainIntentId ?? "?"}${releaseResult.txHash ? ` tx=${releaseResult.txHash.slice(0, 18)}…` : " (already settled)"}\n`);
+          } else {
+            process.stderr.write(`[delivery/live] ETH escrow release FAILED intentId=${intentId}: ${releaseResult.error} — marking release_failed\n`);
+          }
+        } else if (fromChainLabel === "SOL") {
+          // SOL-origin: Anchor `release` ix — single-sourced through solEscrowService.releaseSolEscrow().
+          // Zero-balance returns success=true (idempotent already-released path).
+          const solverSolAddress = getLiveSolverAddresses().sol;
+          if (solverSolAddress) {
+            const solRelease = await releaseSolEscrow(intentId, solverSolAddress);
+            escrowReleaseOk = solRelease.success;
+            if (solRelease.success) {
+              process.stdout.write(`[delivery/live] SOL escrow released intentId=${intentId}${solRelease.txHash ? ` tx=${solRelease.txHash.slice(0, 16)}…` : ` (${solRelease.mode ?? "no-op"})`}\n`);
+            } else {
+              process.stderr.write(`[delivery/live] SOL escrow release FAILED intentId=${intentId}: ${solRelease.error} — marking release_failed\n`);
+            }
+          } else {
+            process.stdout.write(`[delivery/live] SOL escrow: no solver SOL address — skipping release for intentId=${intentId}\n`);
+          }
+        }
+
+        if (!escrowReleaseOk) {
+          // Delivery to user succeeded but solver payout failed — needs operator intervention.
+          // executeDelivery() is called fire-and-forget after HTTP response is sent, so there
+          // is no `res` here. Persist release_failed and return — the polling status endpoint
+          // will surface this to the caller.
+          await db
+            .update(intentsTable)
+            .set({ status: "release_failed", deliveryTxId: result.txHash, updatedAt: new Date() })
+            .where(eq(intentsTable.id, intentId));
+          return; // halt further settlement; operator must call release() manually
+        }
       } else {
-        console.warn(`[delivery/live] real tx failed (${result.error}) — sim fallback`);
-        deliveryTxId = `sim_live_${randomBytes(16).toString("hex")}`;
-        deliveryExplorerUrl = "";
+        // Real delivery failed — surface the error, do not fabricate a tx ID
+        const errMsg = result.error ?? "Live solver delivery returned failure with no txHash";
+        process.stderr.write(`[delivery/live] real tx failed: ${errMsg}\n`);
+        await db
+          .update(intentsTable)
+          .set({ status: "delivery_failed", deliveryError: errMsg, updatedAt: new Date() })
+          .where(eq(intentsTable.id, intentId));
+        return;
       }
     }
 
     // Live delivery covers all chains — no separate Ika MPC path needed for testnet
 
-    if (!deliveryTxId) deliveryTxId = `sim_unknown_${randomBytes(16).toString("hex")}`;
+    if (!deliveryTxId) {
+      const errMsg = "No deliveryTxId produced after all delivery paths — no real tx was confirmed";
+      process.stderr.write(`[delivery] ${errMsg} intentId=${intentId}\n`);
+      await db
+        .update(intentsTable)
+        .set({ status: "delivery_failed", deliveryError: errMsg, updatedAt: new Date() })
+        .where(eq(intentsTable.id, intentId));
+      return;
+    }
 
-    const proofHash = createHash("sha256")
-      .update(`${intentId}:${bid.solverId}:${deliveryTxId}:${Date.now()}`)
-      .digest("hex");
+    const proofHash = deliveryTxId;
 
     const storedTxId = isLiveDelivery && deliveryExplorerUrl
       ? `${deliveryTxId}|${deliveryExplorerUrl}`
@@ -612,7 +989,7 @@ async function executeDelivery(intentId: number, bid: any, intent: any) {
 
     await db
       .update(intentsTable)
-      .set({ status: "delivered", deliveryTxId: storedTxId, proofHash, updatedAt: new Date() })
+      .set({ status: "delivered", deliveryTxId: storedTxId, proofHash, deliveredAmount: isLiveDelivery ? (deliveryActualAmount ?? null) : null, updatedAt: new Date() })
       .where(eq(intentsTable.id, intentId));
 
     setTimeout(async () => {
@@ -622,10 +999,11 @@ async function executeDelivery(intentId: number, bid: any, intent: any) {
         .where(eq(intentsTable.id, intentId));
     }, 3000);
   } catch (err) {
-    console.error("[executeDelivery] failed:", err);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[executeDelivery] failed:", errMsg);
     await db
       .update(intentsTable)
-      .set({ status: "failed", updatedAt: new Date() })
+      .set({ status: "delivery_failed", deliveryError: errMsg, updatedAt: new Date() })
       .where(eq(intentsTable.id, intentId));
   }
 }
@@ -696,46 +1074,55 @@ router.post("/intent/settle", async (req, res) => {
       try { solverSolAddress = getLiveSolverAddresses().sol; } catch { /* no live solver */ }
     }
 
-    // Release real SOL from sentinel escrow → solver's actual address
-    let releaseTxId: string | null = null;
-    let releaseTxExplorer: string | null = null;
-    try {
-      if (!solverSolAddress) throw new Error("Cannot resolve solver payment address");
-      const sentinel = getSentinelKeypair();
-      const conn = new Connection(SOLANA_DEVNET_RPC, "confirmed");
-      const balance = await conn.getBalance(sentinel.publicKey);
-      const requestedLamports = Math.floor(parseFloat(row.amount ?? "0") * 1e9);
-      const releaseLamports = Math.min(requestedLamports, balance - 10_000);
-
-      if (releaseLamports <= 0) throw new Error(`Sentinel balance too low (${balance} lamports) to release`);
-
-      const solverPubkey = new PublicKey(solverSolAddress);
-      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
-      const releaseTx = new Transaction({
-        recentBlockhash: blockhash,
-        feePayer: sentinel.publicKey,
-      }).add(
-        SystemProgram.transfer({
-          fromPubkey: sentinel.publicKey,
-          toPubkey: solverPubkey,
-          lamports: releaseLamports,
-        })
-      );
-      releaseTx.lastValidBlockHeight = lastValidBlockHeight;
-      const sig = await sendAndConfirmTransaction(conn, releaseTx, [sentinel], { commitment: "confirmed" });
-      releaseTxId = sig;
-      releaseTxExplorer = `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
-      process.stdout.write(`[settle] SOL released → ${solverSolAddress.slice(0, 12)}… sig=${sig.slice(0, 16)}… lamports=${releaseLamports}\n`);
-    } catch (releaseErr) {
-      console.warn("[settle] SOL release failed (non-fatal):", (releaseErr as Error).message?.slice(0, 80));
+    // Release SOL from per-intent PDA escrow → solver via the Anchor program.
+    // Release is MANDATORY for settlement — if release fails the intent is
+    // marked release_failed (not settled) and the operator must retry.
+    if (!solverSolAddress) {
+      return res.status(400).json({
+        error: "Cannot resolve solver payment address — settlement blocked",
+        note: "Provide solverPaymentAddress in request body or ensure the solver has a registered SOL address.",
+      });
     }
+
+    const releaseResult = await releaseSolEscrow(intentId, solverSolAddress);
+
+    if (!releaseResult.success) {
+      const errMsg = releaseResult.error ?? "releaseSolEscrow returned failure";
+      process.stderr.write(
+        `[settle] SOL release FAILED intentId=${intentId}: ${errMsg}\n`
+      );
+      await db
+        .update(intentsTable)
+        .set({ status: "release_failed", updatedAt: new Date() })
+        .where(eq(intentsTable.id, intentId));
+      return res.status(502).json({
+        intentId,
+        status: "release_failed",
+        error: errMsg,
+        note: "Escrow release failed — intent marked release_failed. Operator must retry release after diagnosing cause.",
+      });
+    }
+
+    const releaseTxId = releaseResult.txHash ?? null;
+    const releaseTxExplorer = releaseResult.explorerUrl ?? null;
+    process.stdout.write(
+      `[settle] SOL released intentId=${intentId} mode=${releaseResult.mode} → ${solverSolAddress.slice(0, 12)}… ${releaseTxId ? `sig=${releaseTxId.slice(0, 16)}…` : "(already-drained)"}\n`
+    );
+    // Inventory recycling log — shows solver SOL replenished from escrow
+    try {
+      const { Connection: Conn, PublicKey: PK } = await import("@solana/web3.js");
+      const conn2 = new Conn(process.env.SOLANA_DEVNET_RPC ?? "https://api.devnet.solana.com", "confirmed");
+      const newBal2 = await conn2.getBalance(new PK(solverSolAddress));
+      const inputAmt = row.amount ?? "?";
+      process.stdout.write(`[SolverInventory] +${inputAmt} SOL received from SOL escrow release intentId=${intentId}. SOL wallet now: ${(newBal2 / 1e9).toFixed(6)} SOL\n`);
+    } catch { /* non-fatal */ }
 
     await db
       .update(intentsTable)
       .set({ status: "settled", proofHash, updatedAt: new Date() })
       .where(eq(intentsTable.id, intentId));
 
-    res.json({
+    return res.json({
       intentId,
       status: "settled",
       proofHash,
@@ -743,13 +1130,78 @@ router.post("/intent/settle", async (req, res) => {
       releaseTxId,
       releaseTxExplorer,
       note: releaseTxId
-        ? `Escrow released — SOL ditransfer dari sentinel ke solver. Verify: ${releaseTxExplorer}`
-        : "Settled — escrow release skipped (balance insufficient atau error).",
+        ? `Escrow released — SOL sent to solver. Verify: ${releaseTxExplorer}`
+        : "Settled — escrow already drained (previously released).",
       deliveryTxId: row.deliveryTxId,
       standard: "ERC-7683-Inspired",
     });
   } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
+    return res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ── POST /api/admin/retry-delivery ───────────────────────────────────────────
+// Requires x-operator-key header matching OPERATOR_API_KEY env var.
+// If OPERATOR_API_KEY is not configured, returns 503 (fail closed).
+function requireOperatorKey(req: any, res: any, next: any) {
+  const configured = process.env["OPERATOR_API_KEY"];
+  if (!configured) {
+    res.status(503).json({ error: "OPERATOR_API_KEY not configured on server — admin routes unavailable" });
+    return;
+  }
+  const provided = (req.headers["x-operator-key"] as string | undefined) ?? "";
+  if (!provided || provided !== configured) {
+    res.status(401).json({ error: "Unauthorized — valid x-operator-key header required" });
+    return;
+  }
+  next();
+}
+
+router.post("/admin/retry-delivery", requireOperatorKey, async (req, res) => {
+  try {
+    const { intentId } = req.body as { intentId: number };
+    if (!intentId) return res.status(400).json({ error: "intentId required" });
+
+    const [row] = await db.select().from(intentsTable).where(eq(intentsTable.id, intentId)).limit(1);
+    if (!row) return res.status(404).json({ error: "Intent not found" });
+
+    const allowedStates = ["failed", "release_failed"];
+    if (!allowedStates.includes(row.status ?? "")) {
+      return res.status(409).json({
+        error: `Cannot retry intent in state "${row.status}". Only failed/release_failed intents can be retried.`,
+        currentStatus: row.status,
+      });
+    }
+
+    const bids = (row.solverBids as any[]) ?? [];
+    const winningBid = bids.find((b: any) => b.solverId === row.winningSolverId) ?? bids[0];
+    if (!winningBid) {
+      return res.status(400).json({ error: "No winning bid found for intent — cannot retry" });
+    }
+
+    process.stdout.write(`[admin/retry] Retrying delivery for intentId=${intentId} status=${row.status} toChain=${row.toChain}\n`);
+
+    // Reset to accepted so executeDelivery runs clean
+    await db
+      .update(intentsTable)
+      .set({ status: "accepted", updatedAt: new Date() })
+      .where(eq(intentsTable.id, intentId));
+
+    // Fire async — same as normal accept flow
+    executeDelivery(intentId, winningBid, row).catch(e =>
+      console.error("[admin/retry] delivery error:", e)
+    );
+
+    return res.json({
+      success: true,
+      intentId,
+      status: "retrying",
+      message: `Delivery retry initiated for intent #${intentId}. Poll GET /api/intent/${intentId} for status updates.`,
+      bid: { solverId: winningBid.solverId, outputAmount: winningBid.outputAmount, toChain: row.toChain },
+      // deliveryTxId: undefined — not yet available (async); poll GET /api/intent/:id for result
+    });
+  } catch (err) {
+    return res.status(500).json({ error: (err as Error).message });
   }
 });
 

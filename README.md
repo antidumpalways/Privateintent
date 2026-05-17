@@ -108,6 +108,8 @@ User types intent
 | **Source** | `artifacts/escrow-contract/contracts/PrivateIntentEscrow.sol` |
 | **Framework** | Hardhat + Solidity |
 | **ABI** | `artifacts/escrow-contract/build/PrivateIntentEscrow.abi.json` |
+| **ETH Solver Wallet** | `0xFe4957467b528e6E4F2712DCD3C2D4BaB2CDb6AA` (operator — receives escrow release + sends delivery) |
+| **SOL Solver Wallet** | `9xPwjf2dmafdxhnyZeAaVQpYWxH4Kn1N9XeeLQpnkttu` (sentinel — PDA operator + SOL delivery) |
 
 **Functions:**
 ```
@@ -825,6 +827,8 @@ SENTINEL_ETH_ADDRESS=0xFe4957467b528e6E4F2712DCD3C2D4BaB2CDb6AA
 | Git | 2+ |
 
 ### Quick Start
+
+For a fully local development setup using Docker Postgres, see `LOCAL_SETUP.md`.
 
 ```bash
 # 1. Install dependencies

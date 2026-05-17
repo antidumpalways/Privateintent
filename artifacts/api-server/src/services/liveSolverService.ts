@@ -29,6 +29,8 @@ import {
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import { existsSync, readFileSync, writeFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import { getSentinelKeypair } from "./solanaBroadcast.js";
 import { registerSolver, getAllCustomSolvers } from "./customSolverRegistry.js";
 
@@ -58,16 +60,17 @@ export const LIVE_SOLVER_ID = "live-solver-private-intent";
 
 // ─── Keypair management ───────────────────────────────────────────────────────
 
-let _ethWallet: ethers.Wallet | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _ethWallet: any = null;
 
-function getEthWallet(): ethers.Wallet {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getEthWallet(): any {
   if (_ethWallet) return _ethWallet;
 
   // 1. Prefer env var — persists across restarts
-  // Supports both SOLVER_ETH_PRIVATE_KEY (general) and ETH_SOLVER_PRIVATE_KEY (legacy/replit)
-  const ethPk = (process.env.SOLVER_ETH_PRIVATE_KEY || process.env.ETH_SOLVER_PRIVATE_KEY)?.trim();
-  if (ethPk) {
-    _ethWallet = new ethers.Wallet(ethPk);
+  if (process.env.SOLVER_ETH_PRIVATE_KEY) {
+    _ethWallet = new ethers.Wallet(process.env.SOLVER_ETH_PRIVATE_KEY);
+    process.stdout.write(`[LiveSolver] ETH wallet from env: ${_ethWallet.address}\n`);
     return _ethWallet;
   }
 
@@ -76,18 +79,21 @@ function getEthWallet(): ethers.Wallet {
     try {
       const data = JSON.parse(readFileSync(ETH_WALLET_PATH, "utf8")) as { pk: string };
       _ethWallet = new ethers.Wallet(data.pk);
+      process.stdout.write(`[LiveSolver] ETH wallet loaded: ${_ethWallet.address}\n`);
       return _ethWallet;
     } catch { /* fall through */ }
   }
 
   // 3. Generate new — will need funding
-  const hdWallet = ethers.Wallet.createRandom();
-  _ethWallet = new ethers.Wallet(hdWallet.privateKey);
+  const generated = ethers.Wallet.createRandom();
+  _ethWallet = generated;
   try {
-    writeFileSync(ETH_WALLET_PATH, JSON.stringify({ pk: _ethWallet.privateKey }), { mode: 0o600 });
+    writeFileSync(ETH_WALLET_PATH, JSON.stringify({ pk: generated.privateKey }), { mode: 0o600 });
   } catch { /* persistence non-fatal */ }
 
-  return _ethWallet;
+  process.stdout.write(`[LiveSolver] ETH wallet generated: ${generated.address}\n`);
+  process.stdout.write(`[LiveSolver] Fund with Sepolia ETH at https://sepoliafaucet.com: ${generated.address}\n`);
+  return generated;
 }
 
 function getSolKeypair(): Keypair {
@@ -267,6 +273,111 @@ export async function requestSolAirdrop(): Promise<AirdropResult> {
   }
 }
 
+// ─── Solver capacity (real-time inventory) ────────────────────────────────────
+
+export interface SolverCapacity {
+  sol: {
+    address: string;
+    balance: number;
+    maxDeliverable: number;
+    status: "ok" | "low" | "critical";
+  };
+  eth: {
+    address: string;
+    balance: number;
+    maxDeliverable: number;
+    status: "ok" | "low" | "critical";
+  };
+}
+
+/**
+ * Fetch real-time solver inventory from chain RPCs.
+ * Returns actual deliverable amounts after reserves (rent-exempt + gas).
+ * Used for honest bidding and the /api/solver/health endpoint.
+ */
+export async function getLiveSolverCapacity(): Promise<SolverCapacity> {
+  const addrs = getLiveSolverAddresses();
+  const RENT_EXEMPT_BUF = 1_200_000;
+  const FEE_RESERVE     =    10_000;
+
+  const [solResult, ethResult] = await Promise.allSettled([
+    (async () => {
+      const conn = new Connection(SOLANA_DEVNET_RPC, "confirmed");
+      const lamports = await conn.getBalance(new PublicKey(addrs.sol));
+      const maxLamports = Math.max(0, lamports - RENT_EXEMPT_BUF - FEE_RESERVE);
+      const balance = lamports / 1e9;
+      const maxDeliverable = maxLamports / 1e9;
+      return {
+        address: addrs.sol, balance, maxDeliverable,
+        status: (maxDeliverable <= 0 ? "critical" : maxDeliverable < 0.005 ? "low" : "ok") as "ok" | "low" | "critical",
+      };
+    })(),
+    (async () => {
+      const wallet   = getEthWallet();
+      const provider = new ethers.JsonRpcProvider(SEPOLIA_RPC);
+      const wei      = await provider.getBalance(wallet.address);
+      const feeData  = await provider.getFeeData();
+      const gasCost  = (feeData.maxFeePerGas ?? ethers.parseUnits("20", "gwei")) * 21000n;
+      const gasBuffer = gasCost * 2n;
+      const maxWei   = wei > gasBuffer ? wei - gasBuffer : 0n;
+      const balance  = parseFloat(ethers.formatEther(wei));
+      const maxDeliverable = parseFloat(ethers.formatEther(maxWei));
+      return {
+        address: wallet.address, balance, maxDeliverable,
+        status: (maxDeliverable <= 0 ? "critical" : maxDeliverable < 0.005 ? "low" : "ok") as "ok" | "low" | "critical",
+      };
+    })(),
+  ]);
+
+  const sol = solResult.status === "fulfilled"
+    ? solResult.value
+    : { address: addrs.sol, balance: 0, maxDeliverable: 0, status: "critical" as const };
+  const eth = ethResult.status === "fulfilled"
+    ? ethResult.value
+    : { address: addrs.eth, balance: 0, maxDeliverable: 0, status: "critical" as const };
+
+  return { sol, eth };
+}
+
+// ─── Background SOL auto-airdrop loop (devnet only) ──────────────────────────
+
+/**
+ * Start a background loop that auto-airdrops SOL on devnet when solver inventory is low.
+ * No-op in production. Call once from server startup.
+ */
+export function startSolAutoAirdropLoop(): void {
+  if (process.env.NODE_ENV === "production") return;
+
+  const REFILL_THRESHOLD = 5_000_000; // < 0.005 SOL → refill
+  const INTERVAL_MS = 10 * 60 * 1000; // every 10 minutes
+
+  process.stdout.write(`[SolverInventory] SOL auto-airdrop loop started (threshold: ${REFILL_THRESHOLD / 1e9} SOL, interval: 10min)\n`);
+
+  setInterval(async () => {
+    try {
+      const kp   = getSolKeypair();
+      const conn = new Connection(SOLANA_DEVNET_RPC, "confirmed");
+      const bal  = await conn.getBalance(kp.publicKey);
+      if (bal < REFILL_THRESHOLD) {
+        process.stdout.write(`[SolverInventory] SOL low (${(bal / 1e9).toFixed(4)} SOL) — attempting auto-airdrop…\n`);
+        for (const amt of [1_000_000_000, 500_000_000, 200_000_000]) {
+          try {
+            const sig    = await conn.requestAirdrop(kp.publicKey, amt);
+            await conn.confirmTransaction(sig, "confirmed");
+            const newBal = await conn.getBalance(kp.publicKey);
+            process.stdout.write(`[SolverInventory] SOL auto-airdrop +${amt / 1e9} SOL OK. Balance now: ${(newBal / 1e9).toFixed(4)} SOL\n`);
+            break;
+          } catch (e) {
+            process.stderr.write(`[SolverInventory] auto-airdrop ${amt / 1e9} SOL failed: ${(e as Error).message?.slice(0, 60)}\n`);
+          }
+        }
+      }
+    } catch (e) {
+      process.stderr.write(`[SolverInventory] auto-airdrop loop error: ${(e as Error).message?.slice(0, 80)}\n`);
+    }
+  }, INTERVAL_MS);
+}
+
 // ─── Live delivery execution ──────────────────────────────────────────────────
 
 export interface LiveDeliveryParams {
@@ -326,32 +437,45 @@ async function executeSolDelivery(
   const kp = getSolKeypair();
   const conn = new Connection(SOLANA_DEVNET_RPC, "confirmed");
 
-  // Ensure solver is funded — auto-airdrop if needed
+  // Ensure solver is funded — auto-airdrop if balance is too low to deliver anything meaningful
   let balance = await conn.getBalance(kp.publicKey);
-  if (balance < 500_000) {
-    process.stdout.write(`[LiveSolver/SOL] balance low (${balance} lamports) — auto-airdrop…\n`);
-    try {
-      const sig = await conn.requestAirdrop(kp.publicKey, 1_000_000_000);
-      await conn.confirmTransaction(sig, "confirmed");
-      balance = await conn.getBalance(kp.publicKey);
-    } catch (e) {
-      process.stderr.write(`[LiveSolver/SOL] airdrop failed: ${(e as Error).message}\n`);
+  const RENT_EXEMPT_BUFFER = 1_200_000; // ~0.0012 SOL — well above Solana rent-exempt min (~890k)
+  const FEE_RESERVE        =    10_000; // typical fee for a simple SystemProgram.transfer
+
+  if (balance < RENT_EXEMPT_BUFFER + FEE_RESERVE) {
+    process.stdout.write(`[LiveSolver/SOL] balance low (${balance} lamports) — attempting airdrop…\n`);
+    for (const airdropAmt of [1_000_000_000, 500_000_000, 200_000_000]) {
+      try {
+        const sig = await conn.requestAirdrop(kp.publicKey, airdropAmt);
+        await conn.confirmTransaction(sig, "confirmed");
+        balance = await conn.getBalance(kp.publicKey);
+        process.stdout.write(`[LiveSolver/SOL] airdrop OK +${airdropAmt / 1e9} SOL → bal=${balance / 1e9} SOL\n`);
+        break;
+      } catch (e) {
+        process.stderr.write(`[LiveSolver/SOL] airdrop ${airdropAmt / 1e9} SOL failed: ${(e as Error).message?.slice(0, 60)}\n`);
+      }
     }
+    balance = await conn.getBalance(kp.publicKey);
   }
 
-  if (balance < 20_000) {
+  if (balance < RENT_EXEMPT_BUFFER + FEE_RESERVE) {
     return {
       success: false, txHash: "", explorerUrl: "", chain: "SOL", network: "Devnet",
       fromAddress: from, toAddress: to, amount: amountStr, unit: "SOL",
-      isReal: false, error: "Insufficient SOL balance. Airdrop rate-limited. Visit https://faucet.solana.com",
+      isReal: false, error: `Solver SOL balance too low (${(balance / 1e9).toFixed(4)} SOL). Airdrop rate-limited. Visit https://faucet.solana.com`,
     };
   }
 
   let lamports = Math.floor(parseFloat(amountStr) * 1e9);
-  if (lamports < 1) lamports = 10_000; // minimum dust for demo
+  if (lamports < 1) lamports = 10_000;
 
-  const maxSend = balance - 15_000; // leave gas
-  if (lamports > maxSend) lamports = maxSend;
+  // Must leave at least RENT_EXEMPT_BUFFER in sender's account after transfer + fee,
+  // otherwise Solana simulation rejects the tx (below rent-exempt minimum).
+  const maxSend = balance - RENT_EXEMPT_BUFFER - FEE_RESERVE;
+  if (lamports > maxSend) {
+    process.stdout.write(`[LiveSolver/SOL] capping delivery ${lamports} → ${maxSend} lamports (balance=${balance})\n`);
+    lamports = maxSend;
+  }
 
   try {
     const toPubkey = new PublicKey(to);
@@ -436,15 +560,17 @@ async function executeEvmDelivery(
   }
   if (valueWei > maxSend) valueWei = maxSend;
 
-  if (!ethers.isAddress(to)) {
+  // Hard-fail if destination is invalid — never silently send to solver's own wallet
+  if (!ethers.isAddress(to) || to === ethers.ZeroAddress) {
     return {
       success: false, txHash: "", explorerUrl: explorerBase, chain: chainLabel, network: networkLabel,
       fromAddress: from, toAddress: to, amount: amountStr, unit: "ETH",
-      isReal: false, error: `Invalid or missing destination ETH address: "${to}". Ensure you have an ETH address set in your dWallet profile, or provide destinationAddress in the intent.`,
+      isReal: false, error: `Invalid or missing ETH destination address: "${to}". Cannot deliver ETH for SOL→ETH swap.`,
     };
   }
-  const toAddr = to;
+
   try {
+    const toAddr = to;
     const tx = await connectedWallet.sendTransaction({ to: toAddr, value: valueWei });
     await tx.wait(1);
 
@@ -572,6 +698,365 @@ async function executeBtcDelivery(
       fromAddress: from, toAddress: to, amount: amountStr, unit: "tBTC",
       isReal: false, error: msg,
     };
+  }
+}
+
+// ─── ETH Escrow Contract (PrivateIntentEscrow on Sepolia) ────────────────────
+// Deployed contract that holds user ETH until delivery proof is verified.
+// Operator (solver wallet) calls release() to pay solver after delivery.
+
+// Resolve artifact path for all runtime modes:
+const _dir = dirname(fileURLToPath(import.meta.url));
+const _artifactPrimary   = join(_dir, "../contracts/PrivateIntentEscrow.json");
+const _artifactFallback  = join(_dir, "../../contracts/PrivateIntentEscrow.json");
+const _artifactEscrowBuild = join(_dir, "../../escrow-contract/build/PrivateIntentEscrow.json");
+
+let _escrowArtifact: { address: string; abi: any[] } | null = null;
+function getEscrowArtifact() {
+  if (!_escrowArtifact) {
+    const candidates = [_artifactPrimary, _artifactFallback, _artifactEscrowBuild];
+    const path = candidates.find(p => existsSync(p)) ?? _artifactPrimary;
+    _escrowArtifact = JSON.parse(readFileSync(path, "utf8"));
+  }
+  return _escrowArtifact!;
+}
+
+export function getEscrowContractAddress(): string {
+  // Allow operator to override deployed address via env (e.g. after redeployment).
+  // Support both ETH_ESCROW_CONTRACT and ETH_ESCROW_CONTRACT_ADDRESS env var names.
+  return (
+    process.env.ETH_ESCROW_CONTRACT ??
+    process.env.ETH_ESCROW_CONTRACT_ADDRESS ??
+    getEscrowArtifact().address
+  );
+}
+
+/**
+ * Verify an ETH deposit on-chain for the given on-chain intentId.
+ *
+ * Primary path: polls the escrow contract via getIntent(onchainIntentId).
+ * The real contract returns an Intent struct — status 1 = Active (deposited).
+ * IntentStatus: 0=Pending,1=Active,2=Delivered,3=Settled,4=Refunded,5=Disputed
+ *
+ * If sourceTxHash is provided and the contract call fails, falls back to
+ * verifying the raw tx receipt (to == contract, value > 0).
+ */
+export async function checkEthDepositOnChain(
+  onchainIntentId: number,
+  maxWaitMs = 20_000,
+  sourceTxHash?: string,
+): Promise<{ amount: bigint; released: boolean; refunded: boolean } | null> {
+  const provider     = new ethers.JsonRpcProvider(SEPOLIA_RPC);
+  const pollInterval = 4_000;
+  const deadline     = Date.now() + maxWaitMs;
+
+  const escrowContract = getEscrowContract(provider);
+  const contractAddr   = getEscrowContractAddress().toLowerCase();
+  let contractWorked   = false;
+
+  while (Date.now() < deadline) {
+    try {
+      const dep = await escrowContract.getIntent(BigInt(onchainIntentId));
+      if (dep && dep.amount > 0n) {
+        contractWorked = true;
+        // IntentStatus enum: 1=Active, 3=Settled, 4=Refunded
+        const status   = Number(dep.status ?? 0);
+        const released = status >= 3;
+        const refunded = status === 4;
+        process.stdout.write(`[LiveSolver/ETH-check] onchainId=${onchainIntentId} confirmed via getIntent() amount=${ethers.formatEther(dep.amount)} ETH status=${status}\n`);
+        return { amount: dep.amount, released, refunded };
+      }
+      contractWorked = true;
+    } catch { /* RPC hiccup or not yet mined */ }
+    await new Promise<void>(r => setTimeout(r, pollInterval));
+  }
+
+  // Fallback: verify raw tx receipt if contract call never succeeded
+  if (!contractWorked && sourceTxHash) {
+    process.stdout.write(`[LiveSolver/ETH-check] getIntent() unavailable — verifying tx receipt for ${sourceTxHash.slice(0, 14)}…\n`);
+    const deadline2 = Date.now() + maxWaitMs;
+    while (Date.now() < deadline2) {
+      try {
+        const receipt = await provider.getTransactionReceipt(sourceTxHash);
+        if (receipt && receipt.status === 1) {
+          const tx = await provider.getTransaction(sourceTxHash);
+          if (tx && tx.to?.toLowerCase() === contractAddr && tx.value > 0n) {
+            process.stdout.write(`[LiveSolver/ETH-check] tx ${sourceTxHash.slice(0, 12)}… confirmed → contract, value=${ethers.formatEther(tx.value)} ETH\n`);
+            return { amount: tx.value, released: false, refunded: false };
+          }
+        }
+      } catch { /* retry */ }
+      await new Promise<void>(r => setTimeout(r, pollInterval));
+    }
+  }
+
+  return null;
+}
+
+function getEscrowContract(signerOrProvider?: ethers.Signer | ethers.Provider): ethers.Contract {
+  // Use getEscrowContractAddress() so ETH_ESCROW_CONTRACT env override is always respected
+  const { abi } = getEscrowArtifact();
+  const address = getEscrowContractAddress();
+  return new ethers.Contract(address, abi, signerOrProvider);
+}
+
+export interface EthEscrowResult {
+  success: boolean;
+  txHash: string;
+  explorerUrl: string;
+  escrowAddress: string;
+  onchainIntentId?: number;
+  error?: string;
+}
+
+/**
+ * Solver-side fallback: call createIntent() on the escrow contract on behalf of
+ * the intent (used when the user did NOT sign from Phantom — e.g. API-only paths).
+ * Uses the real contract ABI: createIntent(string,string,string,string,uint256,string)
+ */
+export async function lockEthEscrow(
+  amount: string,
+  intentId: number,
+  params: { fromChain: string; toChain: string; fromToken: string; toToken: string; proofHash?: string | null },
+): Promise<EthEscrowResult> {
+  const wallet   = getEthWallet();
+  const provider = new ethers.JsonRpcProvider(SEPOLIA_RPC);
+  const connected = wallet.connect(provider);
+  const contractAddress = getEscrowContractAddress();
+
+  process.stdout.write(`[LiveSolver/ETH-escrow] createIntent dbId=${intentId} ${params.fromChain}→${params.toChain} amt=${amount} → contract ${contractAddress.slice(0, 10)}…\n`);
+
+  const balance = await provider.getBalance(wallet.address);
+  if (balance === 0n) {
+    return {
+      success: false, txHash: "", escrowAddress: contractAddress,
+      explorerUrl: "https://sepolia.etherscan.io",
+      error: "Solver ETH wallet unfunded on Sepolia. Fund at: https://sepoliafaucet.com",
+    };
+  }
+
+  let valueWei: bigint;
+  try { valueWei = ethers.parseEther(amount); }
+  catch { valueWei = ethers.parseEther("0.0001"); }
+
+  const feeData = await provider.getFeeData();
+  const gasPrice = feeData.maxFeePerGas ?? ethers.parseUnits("20", "gwei");
+  const gasCost  = gasPrice * 200_000n;
+  const maxSend  = balance > gasCost * 2n ? balance - gasCost * 2n : 0n;
+  if (maxSend === 0n) {
+    return {
+      success: false, txHash: "", escrowAddress: contractAddress,
+      explorerUrl: "https://sepolia.etherscan.io",
+      error: "Insufficient ETH balance to cover gas for escrow deposit",
+    };
+  }
+  if (valueWei > maxSend) valueWei = maxSend;
+
+  const releaseAfter = 0n; // no timelock for hackathon
+  if (!params.proofHash) {
+    throw new Error(
+      `[lockEthEscrow] No proofHash for intentId=${intentId}. ` +
+      `Intent must have a real Encrypt FHE ID before ETH escrow can be created. ` +
+      `Submit the intent first via POST /api/intent/submit.`
+    );
+  }
+  const proofHash = params.proofHash;
+  const escrowContract = getEscrowContract(connected);
+
+  try {
+    const tx = await escrowContract.createIntent(
+      params.fromChain, params.toChain, params.fromToken, params.toToken,
+      releaseAfter, proofHash,
+      { value: valueWei, gasLimit: 300_000 },
+    );
+    const receipt = await tx.wait(1);
+    // Parse onchain intentId from IntentCreated event
+    let onchainIntentId: number | undefined;
+    for (const log of (receipt?.logs ?? [])) {
+      try {
+        const parsed = escrowContract.interface.parseLog({ topics: [...log.topics], data: log.data });
+        if (parsed?.name === "IntentCreated") {
+          onchainIntentId = Number(parsed.args.intentId);
+          break;
+        }
+      } catch { /* skip non-matching logs */ }
+    }
+    process.stdout.write(`[LiveSolver/ETH-escrow] createIntent confirmed hash=${tx.hash.slice(0, 18)}… value=${ethers.formatEther(valueWei)} ETH onchainId=${onchainIntentId ?? "?"}\n`);
+    return {
+      success: true,
+      txHash: tx.hash,
+      explorerUrl: `https://sepolia.etherscan.io/tx/${tx.hash}`,
+      escrowAddress: contractAddress,
+      onchainIntentId,
+    };
+  } catch (e) {
+    const msg = (e as Error).message?.slice(0, 200);
+    process.stderr.write(`[LiveSolver/ETH-escrow] contract deposit failed: ${msg}\n`);
+    return { success: false, txHash: "", escrowAddress: contractAddress, explorerUrl: "https://sepolia.etherscan.io", error: msg };
+  }
+}
+
+export interface EthReleaseResult {
+  success: boolean;
+  txHash?: string;
+  error?: string;
+}
+
+/**
+ * Release ETH from the escrow contract to the solver after delivery proof.
+ *
+ * Uses the real contract ABI: settleIntent(uint256, address, string)
+ * onchainIntentId — the contract-assigned ID from IntentCreated event (NOT the DB id).
+ * deliveryTxHash  — solver's delivery proof tx hash (required by real contract).
+ *
+ * Polls for the deposit to be on-chain first (handles race with pending Phantom tx).
+ */
+export async function releaseFromEscrowContract(
+  intentId: number,
+  solverEthAddress: string,
+  deliveryTxHash: string,
+  onchainIntentId?: number,
+): Promise<EthReleaseResult> {
+  const POLL_INTERVAL_MS = 5_000;
+  const POLL_TIMEOUT_MS  = 120_000;
+
+  const wallet   = getEthWallet();
+  const provider = new ethers.JsonRpcProvider(SEPOLIA_RPC);
+  const connected = wallet.connect(provider);
+  const contractAddress = getEscrowContractAddress();
+  const escrowContract  = getEscrowContract(connected);
+  // Prefer the on-chain intentId from the IntentCreated event; fall back to DB id only if unknown
+  const contractIntentId = BigInt(onchainIntentId ?? intentId);
+
+  process.stdout.write(`[LiveSolver/ETH-release] waiting for deposit: dbId=${intentId} onchainId=${onchainIntentId ?? "?"} contract=${contractAddress.slice(0, 10)}…\n`);
+
+  // ── Poll until deposit appears on-chain ────────────────────────────────────
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  let dep: { amount: bigint; status: number } | null = null;
+
+  while (Date.now() < deadline) {
+    try {
+      const raw = await escrowContract.getIntent(contractIntentId);
+      if (raw && raw.amount > 0n) {
+        const status = Number(raw.status ?? 0);
+        dep = { amount: raw.amount, status };
+        if (status === 1) break; // Active — ready to settle
+        if (status >= 3) {
+          process.stdout.write(`[LiveSolver/ETH-release] onchainId=${contractIntentId} already settled (status=${status})\n`);
+          return { success: true };
+        }
+      }
+    } catch { dep = null; }
+    process.stdout.write(`[LiveSolver/ETH-release] onchainId=${contractIntentId} not yet Active, retrying in ${POLL_INTERVAL_MS / 1000}s…\n`);
+    await new Promise<void>(r => setTimeout(r, POLL_INTERVAL_MS));
+  }
+
+  if (!dep || dep.amount === 0n) {
+    const msg = `Deposit for onchainId=${contractIntentId} not confirmed on-chain after ${POLL_TIMEOUT_MS / 1000}s`;
+    process.stderr.write(`[LiveSolver/ETH-release] ${msg}\n`);
+    return { success: false, error: msg };
+  }
+
+  // ── Settle to solver — real contract requires a non-empty delivery proof ──────
+  // The delivery tx hash may be an Ethereum 0x... hash (66 chars) for ETH→ETH delivery,
+  // or a Solana base58 signature (~88 chars) for ETH→SOL delivery. The on-chain contract
+  // stores it as a string and does not enforce format — chain-aware validation here.
+  const isEthTx  = deliveryTxHash.startsWith("0x") && deliveryTxHash.length === 66;
+  const isSolTx  = /^[1-9A-HJ-NP-Za-km-z]{43,90}$/.test(deliveryTxHash); // base58
+  if (!deliveryTxHash || (!isEthTx && !isSolTx)) {
+    const msg = `Cannot settle ETH escrow: deliveryTxHash is missing or not a valid on-chain tx. ` +
+      `Got: "${deliveryTxHash.slice(0, 20)}…". Expected ETH (0x+66chars) or SOL (base58 43-90 chars). ` +
+      `Delivery must complete successfully before settlement.`;
+    process.stderr.write(`[LiveSolver/ETH-release] ${msg}\n`);
+    return { success: false, error: msg };
+  }
+  try {
+    const proof = deliveryTxHash;
+    process.stdout.write(`[LiveSolver/ETH-release] settleIntent onchainId=${contractIntentId} amt=${ethers.formatEther(dep.amount)} ETH → ${solverEthAddress.slice(0, 10)}…\n`);
+    const tx = await escrowContract.settleIntent(contractIntentId, solverEthAddress, proof, { gasLimit: 200_000 });
+    await tx.wait(1);
+    process.stdout.write(`[LiveSolver/ETH-release] SETTLED tx=${tx.hash.slice(0, 18)}… amt=${ethers.formatEther(dep.amount)} ETH\n`);
+    // Inventory recycling log — shows solver ETH replenished from escrow
+    try {
+      const newBal = await provider.getBalance(wallet.address);
+      process.stdout.write(`[SolverInventory] +${ethers.formatEther(dep.amount)} ETH received from settlement intentId=${contractIntentId}. ETH wallet now: ${parseFloat(ethers.formatEther(newBal)).toFixed(6)} ETH\n`);
+    } catch { /* non-fatal */ }
+    return { success: true, txHash: tx.hash };
+  } catch (e) {
+    const msg = (e as Error).message?.slice(0, 200);
+    process.stderr.write(`[LiveSolver/ETH-release] release tx failed: ${msg}\n`);
+    return { success: false, error: msg };
+  }
+}
+
+// ─── Solver fulfillment pre-check ─────────────────────────────────────────────
+
+/**
+ * Check if the Live Solver has sufficient inventory to fulfill a delivery
+ * BEFORE locking the user's escrow. Returns ok=false if the solver can't deliver,
+ * so the accept route can reject early rather than locking funds and failing later.
+ *
+ * toChain  — the output chain ("SOL", "ETH", "BASE", "ARB")
+ * outputAmount — the quoted delivery amount (string, e.g. "0.003996")
+ */
+export async function checkSolverCanFulfill(
+  toChain: string,
+  outputAmount: string,
+): Promise<{ ok: boolean; available: string; required: string; shortfall?: string }> {
+  try {
+    if (toChain === "SOL") {
+      const kp = getSolKeypair();
+      const conn = new Connection(SOLANA_DEVNET_RPC, "confirmed");
+      const balance = await conn.getBalance(kp.publicKey);
+
+      const RENT_EXEMPT_BUFFER = 1_200_000;
+      const FEE_RESERVE        =    10_000;
+      const required = Math.floor(parseFloat(outputAmount) * 1e9);
+      const available = Math.max(0, balance - RENT_EXEMPT_BUFFER - FEE_RESERVE);
+
+      const ok = available >= required;
+      return {
+        ok,
+        available: (available / 1e9).toFixed(6),
+        required:  (required  / 1e9).toFixed(6),
+        shortfall: ok ? undefined : ((required - available) / 1e9).toFixed(6),
+      };
+    }
+
+    if (["ETH", "BASE", "ARB"].includes(toChain)) {
+      const wallet = getEthWallet();
+      const rpcUrl = toChain === "ETH" ? SEPOLIA_RPC
+        : toChain === "BASE" ? BASE_SEPOLIA_RPC
+        : ARB_SEPOLIA_RPC;
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const balance  = await provider.getBalance(wallet.address);
+
+      const feeData  = await provider.getFeeData();
+      const gasCost  = (feeData.maxFeePerGas ?? ethers.parseUnits("20", "gwei")) * 21000n;
+      const gasBuffer = gasCost * 2n;
+
+      let required: bigint;
+      try { required = ethers.parseEther(outputAmount); }
+      catch { required = 0n; }
+
+      const available = balance > gasBuffer ? balance - gasBuffer : 0n;
+      const ok = available >= required;
+      return {
+        ok,
+        available: ethers.formatEther(available),
+        required:  ethers.formatEther(required),
+        shortfall: ok ? undefined : ethers.formatEther(required - available),
+      };
+    }
+
+    // Unsupported chain — fail closed to avoid unverified escrow lock
+    process.stderr.write(`[checkSolverCanFulfill] unsupported chain "${toChain}" — failing closed\n`);
+    return { ok: false, available: "unsupported_chain", required: outputAmount };
+  } catch (e) {
+    // Fail closed on RPC/check error: do not lock escrow when inventory cannot be verified.
+    // Caller receives 503 so the user can retry once connectivity is restored.
+    process.stderr.write(`[checkSolverCanFulfill] check error for ${toChain}: ${(e as Error).message?.slice(0, 80)} — failing closed\n`);
+    return { ok: false, available: "check_error", required: outputAmount };
   }
 }
 

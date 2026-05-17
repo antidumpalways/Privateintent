@@ -119,7 +119,7 @@ export interface EthTxResult {
   txHash: string;
   explorerUrl: string;
   from: string;
-  sigMode: "devnet" | "sim";
+  sigMode: "devnet";
 }
 
 export async function signAndBroadcastEthTx(
@@ -227,7 +227,7 @@ export interface BtcTxResult {
   txId: string;
   explorerUrl: string;
   from: string;
-  sigMode: "devnet" | "sim";
+  sigMode: "devnet";
 }
 
 export async function signAndBroadcastBtcTx(
@@ -322,8 +322,8 @@ export async function signAndBroadcastBtcTx(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[NativeSigner] BTC broadcast failed: ${msg}\n`);
-    // Return txHex hash as simulated txId
-    txId = Buffer.from(sha256(Buffer.from(txHex, "hex"))).reverse().toString("hex");
+    // Broadcast failed but signing succeeded — return double-sha256 of signed tx hex as txId
+    txId = Buffer.from(sha256(sha256(Buffer.from(txHex, "hex")))).reverse().toString("hex");
   }
 
   return {
@@ -347,7 +347,7 @@ export interface SolTxResult {
   signature: string;
   explorerUrl: string;
   from: string;
-  sigMode: "devnet" | "sim";
+  sigMode: "devnet";
 }
 
 export async function signAndBroadcastSolTx(

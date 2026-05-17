@@ -10,6 +10,8 @@ export const intentStatusEnum = pgEnum("intent_status", [
   "settled",
   "failed",
   "refunded",
+  "release_failed",    // ETH escrow: delivery succeeded but on-chain release() call failed
+  "delivery_failed",   // On-chain delivery tx failed; error persisted in deliveryError column
 ]);
 
 export const intentsTable = pgTable("intents", {
@@ -29,7 +31,10 @@ export const intentsTable = pgTable("intents", {
   solverBids: jsonb("solver_bids"),
   sourceTxId: text("source_tx_id"),
   deliveryTxId: text("delivery_tx_id"),
+  deliveryError: text("delivery_error"),
   proofHash: text("proof_hash"),
+  onchainIntentId: text("onchain_intent_id"),
+  deliveredAmount: text("delivered_amount"),
   escrowPda: text("escrow_pda"),
   deadline: timestamp("deadline"),
   releaseAfter: timestamp("release_after"),

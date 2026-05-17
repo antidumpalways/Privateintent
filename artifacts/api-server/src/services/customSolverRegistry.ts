@@ -54,37 +54,6 @@ const CHAIN_TOKENS: Record<string, string> = {
 // In-memory registry (would be DB-backed in production)
 const registry = new Map<string, CustomSolverRegistration>();
 
-// Pre-seed two example custom solvers to show the concept
-registry.set("custom-delta", {
-  id: "custom-delta",
-  name: "Delta Solver",
-  description: "Community-run solver specializing in SOL↔ETH routes. Low fee, fast settlement.",
-  operatorAddress: "DeLTAxyz123456789abcdefghijklmnop",
-  baseFeePercent: 0.18,
-  supportedFromChains: ["SOL", "ETH"],
-  supportedToChains: ["ETH", "SOL"],
-  webhookUrl: undefined,
-  strategy: "Underbid market by 0.07% on SOL↔ETH routes.",
-  registeredAt: new Date(Date.now() - 86400000 * 3).toISOString(),
-  totalBids: 127,
-  wins: 43,
-});
-
-registry.set("custom-epsilon", {
-  id: "custom-epsilon",
-  name: "Epsilon Solver",
-  description: "Institutional solver with deep ETH liquidity. Guaranteed 25s ETH delivery SLA.",
-  operatorAddress: "EPSiLoNxyz987654321zyxwvutsrqponm",
-  baseFeePercent: 0.35,
-  supportedFromChains: ["SOL", "ETH"],
-  supportedToChains: ["SOL", "ETH"],
-  webhookUrl: undefined,
-  strategy: "Price at market + 0.05% spread. Prioritize ETH delivery speed over fee compression.",
-  registeredAt: new Date(Date.now() - 86400000 * 7).toISOString(),
-  totalBids: 89,
-  wins: 31,
-});
-
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 export function registerSolver(data: {
