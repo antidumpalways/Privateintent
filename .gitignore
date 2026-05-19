@@ -52,6 +52,9 @@ Thumbs.db
 .agent/
 attached_assets/
 
+# Source image files (not for repo)
+Dr.Watermark_Gemini_*.jpg
+
 # Environment variables (sensitive keys)
 .env
 .env.local

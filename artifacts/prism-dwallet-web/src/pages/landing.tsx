@@ -39,10 +39,10 @@ const FEATURES = [
         <circle cx="12" cy="12" r="3" fill="currentColor" opacity="0.5"/>
       </svg>
     ),
-    title: "Ika dWallet: Bridgeless MPC",
-    desc: "One DKG keypair controls native assets on any chain simultaneously. No wrapped tokens, no lock-and-mint. Solver delivers natively via Ika threshold signing.",
+    title: "Ika MPC: Threshold Co-Signing",
+    desc: "Every intent is co-signed by Ika's MPC threshold network. No single party controls the key — your transaction only executes when both you and Ika's distributed nodes agree.",
     badge: "Ika devnet",
-    trust: "MPC keypair on Ika DKG network",
+    trust: "MPC threshold signing, no single point of failure",
   },
   {
     icon: (
@@ -137,11 +137,14 @@ export default function Landing() {
       fontFamily: "'Inter', system-ui, sans-serif" }}>
       <style>{styles}</style>
 
-      {/* Subtle single ambient blob */}
+      {/* Full-screen background image — more visible, text-friendly */}
       <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
         pointerEvents: "none", zIndex: 0, overflow: "hidden" }}>
-        <div style={{ position: "absolute", top: "5%", left: "25%", width: "700px", height: "700px",
-          background: `radial-gradient(ellipse, ${P}12 0%, transparent 60%)` }} />
+        <img src="/bg-landing.jpg" alt=""
+          style={{ width: "100%", height: "100%", objectFit: "cover", opacity: 0.65 }} />
+        {/* Dark overlay — lighter so background shows through more */}
+        <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+          background: `linear-gradient(to bottom, ${BG}aa 0%, ${BG}77 40%, ${BG}88 60%, ${BG}bb 100%)` }} />
       </div>
 
       {/* Navbar */}
